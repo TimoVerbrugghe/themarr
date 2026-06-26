@@ -55,6 +55,21 @@ docker-compose --env-file .env run --rm themarr
 docker-compose --env-file .env up -d
 ```
 
+## AI Ready
+
+This repo is configured for AI coding assistants:
+
+- `AGENTS.md` contains project-level agent guidance and validation commands.
+- `.github/copilot-instructions.md` provides GitHub Copilot-specific instructions.
+
+If you use an AI assistant to change code, validate with:
+
+```bash
+python3 -m py_compile plex_theme_downloader.py
+docker compose config
+docker build -t themarr:test .
+```
+
 ## Configuration
 
 ### Environment Variables
