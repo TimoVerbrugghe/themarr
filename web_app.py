@@ -33,6 +33,17 @@ ALLOWED_YOUTUBE_HOSTS = {'youtube.com', 'www.youtube.com', 'm.youtube.com', 'mus
 # In-memory cache for library items, warmed at startup to make first page loads instant.
 _library_cache: dict = {}        # {section_id: [item_dict, ...]}
 _library_cache_lock = threading.Lock()
+_section_build_locks: dict = {}  # {section_id: threading.Lock()}
+_section_build_locks_lock = threading.Lock()
+_poster_cache: dict = {}         # {rating_key: {'content': bytes, 'content_type': str}}
+_poster_cache_lock = threading.Lock()
+_theme_hydration_status = {
+    'running': False,
+    'ready': True,
+    'sections_total': 0,
+    'sections_completed': 0,
+}
+_theme_hydration_status_lock = threading.Lock()
 
 def error_response(message, status_code=500, exc=None):
     """Return a safe JSON error response while logging internal details."""
@@ -110,13 +121,12 @@ def get_item_local_path(item):
     for loc in item.locations:
         candidate = Path(loc)
         if item.type == 'show':
-            if candidate.is_dir():
-                return candidate
-        elif item.type == 'movie':
-            if candidate.is_file():
-                return candidate.parent
-            if candidate.is_dir():
-                return candidate
+            # Avoid filesystem stat calls here (especially on NFS). Plex already
+            # gives us the canonical library path; we use it directly.
+            return candidate
+        if item.type == 'movie':
+            # Movie locations may be either file paths or folder paths.
+            return candidate.parent if candidate.suffix else candidate
 
     return None
 
@@ -331,22 +341,196 @@ def item_to_dict(item, theme_dirs=None):
 # Library item cache
 # ============================================================
 
-def _build_library_items(section_id):
+def _build_library_items(section_id, include_theme_state=True):
     """Fetch and return sorted item dicts for a Plex section (no caching)."""
+    started = time.perf_counter()
     plex = get_plex()
     section = plex.library.sectionByID(section_id)
-    base_paths = get_section_base_paths(plex)
-    theme_dirs = scan_local_theme_dirs(base_paths)
+
+    fetch_started = time.perf_counter()
     items = section.all()
-    result = [item_to_dict(item, theme_dirs) for item in items]
+    fetch_duration = time.perf_counter() - fetch_started
+
+    if include_theme_state:
+        section_locations = getattr(section, 'locations', None)
+        if isinstance(section_locations, (list, tuple, set)):
+            base_paths = {path for path in section_locations if isinstance(path, str) and path}
+        else:
+            base_paths = set()
+        if not base_paths:
+            base_paths = get_section_base_paths(plex)
+        scan_started = time.perf_counter()
+        theme_dirs = scan_local_theme_dirs(base_paths)
+        scan_duration = time.perf_counter() - scan_started
+    else:
+        theme_dirs = {}
+        scan_duration = 0.0
+
+    result = [item_to_dict(item, theme_dirs=theme_dirs) for item in items]
     result.sort(key=lambda item: item['title'].lower())
+    if include_theme_state:
+        logger.info(
+            'Built section %s item payload: %d items (theme scan %.2fs, plex fetch %.2fs, total %.2fs)',
+            section_id, len(result), scan_duration, fetch_duration, time.perf_counter() - started,
+        )
+    else:
+        logger.info(
+            'Built section %s metadata payload: %d items (plex fetch %.2fs, total %.2fs)',
+            section_id, len(result), fetch_duration, time.perf_counter() - started,
+        )
     return result
 
 
 def _invalidate_library_cache():
-    """Drop all cached library sections so the next fetch re-queries Plex."""
+    """Drop all cached libraries/posters so the next fetch re-queries Plex."""
     with _library_cache_lock:
         _library_cache.clear()
+    with _poster_cache_lock:
+        _poster_cache.clear()
+    with _theme_hydration_status_lock:
+        _theme_hydration_status.update({
+            'running': True,
+            'ready': False,
+            'sections_total': 0,
+            'sections_completed': 0,
+        })
+
+
+def _get_section_build_lock(section_id):
+    """Return a per-section lock to avoid duplicate cache builds under load."""
+    section_id = int(section_id)
+    with _section_build_locks_lock:
+        section_lock = _section_build_locks.get(section_id)
+        if section_lock is None:
+            section_lock = threading.Lock()
+            _section_build_locks[section_id] = section_lock
+    return section_lock
+
+
+def _set_theme_hydration_total(sections_total):
+    with _theme_hydration_status_lock:
+        _theme_hydration_status.update({
+            'running': True,
+            'ready': False,
+            'sections_total': sections_total,
+            'sections_completed': 0,
+        })
+
+
+def _advance_theme_hydration_progress():
+    with _theme_hydration_status_lock:
+        completed = min(
+            _theme_hydration_status.get('sections_total', 0),
+            _theme_hydration_status.get('sections_completed', 0) + 1,
+        )
+        _theme_hydration_status['sections_completed'] = completed
+        total = _theme_hydration_status.get('sections_total', 0)
+        if total > 0 and completed >= total:
+            _theme_hydration_status['running'] = False
+            _theme_hydration_status['ready'] = True
+
+
+def _mark_theme_hydration_finished():
+    with _theme_hydration_status_lock:
+        _theme_hydration_status['running'] = False
+        _theme_hydration_status['ready'] = True
+        _theme_hydration_status['sections_completed'] = _theme_hydration_status.get('sections_total', 0)
+
+
+def _get_theme_hydration_status():
+    with _theme_hydration_status_lock:
+        return dict(_theme_hydration_status)
+
+
+def _get_cached_item(rating_key):
+    """Return a cached item dict by ratingKey, or None if not cached."""
+    target = str(rating_key)
+    with _library_cache_lock:
+        for section_items in _library_cache.values():
+            for cached_item in section_items:
+                if str(cached_item.get('ratingKey')) == target:
+                    return cached_item
+    return None
+
+
+def _get_cached_poster(rating_key):
+    """Return cached poster payload dict for *rating_key*, or None."""
+    with _poster_cache_lock:
+        return _poster_cache.get(int(rating_key))
+
+
+def _set_cached_poster(rating_key, content, content_type):
+    """Store poster bytes in the in-memory poster cache."""
+    with _poster_cache_lock:
+        _poster_cache[int(rating_key)] = {
+            'content': content,
+            'content_type': content_type,
+        }
+
+
+def _fetch_poster_bytes(plex, thumb, timeout=10):
+    """Fetch poster bytes for a Plex thumb path."""
+    url = plex.url(thumb, includeToken=True)
+    response = plex_session_get(plex, url, stream=True, timeout=timeout)
+    response.raise_for_status()
+    content_type = response.headers.get('content-type', 'image/jpeg')
+    return response.content, content_type
+
+
+def _warm_poster_cache():
+    """Background thread: pre-load poster images for already-cached library items."""
+    logger.info('Poster cache warmup starting…')
+    try:
+        plex = get_plex()
+    except Exception as exc:
+        logger.warning('Poster cache warmup: could not connect to Plex: %s', exc)
+        return
+
+    with _library_cache_lock:
+        all_items = [
+            item
+            for section_items in _library_cache.values()
+            for item in section_items
+            if item.get('thumb') and item.get('ratingKey') is not None
+        ]
+
+    unique_items = {}
+    for item in all_items:
+        unique_items[int(item['ratingKey'])] = item
+    items_to_warm = list(unique_items.values())
+
+    if not items_to_warm:
+        logger.info('Poster cache warmup skipped: no cached items found.')
+        return
+
+    warmed = 0
+
+    def warm_item(item):
+        rating_key = int(item['ratingKey'])
+        if _get_cached_poster(rating_key) is not None:
+            return True
+        try:
+            content, content_type = _fetch_poster_bytes(plex, item['thumb'], timeout=10)
+            _set_cached_poster(rating_key, content, content_type)
+            return True
+        except Exception as exc:
+            logger.debug('Poster cache warmup failed for ratingKey %s: %s', rating_key, exc)
+            return False
+
+    max_workers = min(6, max(1, len(items_to_warm)))
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='poster-cache-warm') as executor:
+        futures = [executor.submit(warm_item, item) for item in items_to_warm]
+        for future in as_completed(futures):
+            if future.result():
+                warmed += 1
+
+    logger.info('Poster cache warmup complete: %d/%d posters cached', warmed, len(items_to_warm))
+
+
+def _kick_off_poster_cache_warmup():
+    """Start poster warmup in a background thread."""
+    t = threading.Thread(target=_warm_poster_cache, daemon=True, name='poster-cache-rebuild')
+    t.start()
 
 
 def _sync_cached_item(item):
@@ -373,31 +557,84 @@ def _kick_off_cache_warmup():
 
 
 def _warm_library_cache():
-    """Background thread: pre-load every show/movie library section into the cache."""
+    """Background thread: pre-load metadata, then hydrate local theme state."""
     logger.info('Library cache warmup starting…')
     try:
         plex = get_plex()
         sections = [s for s in plex.library.sections() if s.type in ('show', 'movie')]
     except Exception as exc:
         logger.warning('Library cache warmup: could not connect to Plex: %s', exc)
+        _mark_theme_hydration_finished()
         return
 
-    def warm_section(section):
-        try:
-            items = _build_library_items(section.key)
+    _set_theme_hydration_total(len(sections))
+    if not sections:
+        _mark_theme_hydration_finished()
+        return
+
+    def warm_section_metadata(section):
+        section_lock = _get_section_build_lock(section.key)
+        with section_lock:
             with _library_cache_lock:
-                _library_cache[section.key] = items
-            logger.info('Library cache warmed: section %s (%s) — %d items', section.key, section.title, len(items))
+                if _library_cache.get(section.key) is not None:
+                    return
+            try:
+                items = _build_library_items(section.key, include_theme_state=False)
+                with _library_cache_lock:
+                    _library_cache[section.key] = items
+            except Exception as exc:
+                logger.warning('Library metadata warmup failed for section %s: %s', section.key, exc)
+
+    def hydrate_section_theme_state(section):
+        try:
+            section_locations = getattr(section, 'locations', None)
+            if isinstance(section_locations, (list, tuple, set)):
+                base_paths = {path for path in section_locations if isinstance(path, str) and path}
+            else:
+                base_paths = set()
+            if not base_paths:
+                theme_dirs = {}
+            else:
+                theme_dirs = scan_local_theme_dirs(base_paths)
+
+            section_lock = _get_section_build_lock(section.key)
+            with section_lock:
+                with _library_cache_lock:
+                    cached_items = _library_cache.get(section.key)
+                    if cached_items is None:
+                        return
+                    updated_items = []
+                    for cached_item in cached_items:
+                        updated_item = dict(cached_item)
+                        local_path = updated_item.get('local_path')
+                        theme_size = theme_dirs.get(local_path, 0) if local_path else 0
+                        updated_item['has_local_theme'] = theme_size > 0
+                        updated_item['theme_size'] = theme_size
+                        updated_items.append(updated_item)
+                    _library_cache[section.key] = updated_items
+            logger.info(
+                'Library cache theme hydration complete: section %s (%s) — %d items',
+                section.key, section.title, len(updated_items),
+            )
         except Exception as exc:
-            logger.warning('Library cache warmup failed for section %s: %s', section.key, exc)
+            logger.warning('Library cache theme hydration failed for section %s: %s', section.key, exc)
+        finally:
+            _advance_theme_hydration_progress()
 
     max_workers = min(4, max(1, len(sections)))
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='library-cache-warm') as executor:
-        futures = [executor.submit(warm_section, section) for section in sections]
+        futures = [executor.submit(warm_section_metadata, section) for section in sections]
+        for future in as_completed(futures):
+            future.result()
+
+    hydrate_workers = min(2, max(1, len(sections)))
+    with ThreadPoolExecutor(max_workers=hydrate_workers, thread_name_prefix='theme-hydrate') as executor:
+        futures = [executor.submit(hydrate_section_theme_state, section) for section in sections]
         for future in as_completed(futures):
             future.result()
 
     logger.info('Library cache warmup complete.')
+    _kick_off_poster_cache_warmup()
 
 
 
@@ -447,6 +684,8 @@ def get_libraries():
             if section.type in ('show', 'movie'):
                 result.append({
                     'id': section.key,
+                    # Keep `key` for frontend/API backwards compatibility.
+                    'key': section.key,
                     'title': section.title,
                     'type': section.type,
                     'thumb': section.thumb,
@@ -457,6 +696,13 @@ def get_libraries():
         return error_response('Failed to get libraries', exc=exc)
 
 
+@app.route('/api/cache/status')
+def get_cache_status():
+    """Return startup cache/hydration status for the Web UI startup overlay."""
+    status = _get_theme_hydration_status()
+    return jsonify(status)
+
+
 @app.route('/api/libraries/<int:section_id>/items')
 def get_library_items(section_id):
     """Return all items in a library section, served from cache when available."""
@@ -464,28 +710,43 @@ def get_library_items(section_id):
         cached = _library_cache.get(section_id)
     if cached is not None:
         return jsonify(cached)
-    try:
-        result = _build_library_items(section_id)
+
+    section_lock = _get_section_build_lock(section_id)
+    with section_lock:
         with _library_cache_lock:
-            _library_cache[section_id] = result
-        return jsonify(result)
-    except Exception as exc:
-        return error_response(f'Failed to get items for section {section_id}', exc=exc)
+            cached = _library_cache.get(section_id)
+        if cached is not None:
+            return jsonify(cached)
+        try:
+            result = _build_library_items(section_id)
+            with _library_cache_lock:
+                _library_cache[section_id] = result
+            return jsonify(result)
+        except Exception as exc:
+            return error_response(f'Failed to get items for section {section_id}', exc=exc)
 
 
 @app.route('/api/poster/<int:rating_key>')
 def get_poster(rating_key):
     """Proxy Plex poster image to avoid CORS/token issues in browser."""
     try:
+        cached_poster = _get_cached_poster(rating_key)
+        if cached_poster is not None:
+            return Response(cached_poster['content'], mimetype=cached_poster['content_type'])
+
         plex = get_plex()
-        item = plex.fetchItem(rating_key)
-        if not item.thumb:
+        cached_item = _get_cached_item(rating_key)
+        thumb = cached_item.get('thumb') if cached_item else None
+        if not thumb:
+            item = plex.fetchItem(rating_key)
+            thumb = item.thumb
+
+        if not thumb:
             return jsonify({'error': 'No poster available'}), 404
-        url = plex.url(item.thumb, includeToken=True)
-        response = plex_session_get(plex, url, stream=True, timeout=10)
-        response.raise_for_status()
-        content_type = response.headers.get('content-type', 'image/jpeg')
-        return Response(response.content, mimetype=content_type)
+
+        content, content_type = _fetch_poster_bytes(plex, thumb, timeout=10)
+        _set_cached_poster(rating_key, content, content_type)
+        return Response(content, mimetype=content_type)
     except Exception as exc:
         return error_response(f'Failed to get poster for {rating_key}', exc=exc)
 
@@ -564,6 +825,59 @@ def download_theme_from_plex(rating_key):
         return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
     except Exception as exc:
         return error_response(f'Failed to download theme from Plex for {rating_key}', exc=exc)
+
+
+@app.route('/api/items/<int:rating_key>/theme/copy', methods=['POST'])
+def copy_theme_from_item(rating_key):
+    """Copy a local theme.mp3 from one item to another."""
+    try:
+        data = request.get_json(silent=True) or {}
+        source_rating_key = data.get('sourceRatingKey')
+        if source_rating_key is None:
+            return jsonify({'error': 'sourceRatingKey is required'}), 400
+
+        try:
+            source_rating_key = int(source_rating_key)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'sourceRatingKey must be a valid integer'}), 400
+
+        if source_rating_key == int(rating_key):
+            return jsonify({'error': 'Source item must be different from target item'}), 400
+
+        overwrite = data.get('overwrite', False)
+
+        plex = get_plex()
+        target_item = plex.fetchItem(rating_key)
+        source_item = plex.fetchItem(source_rating_key)
+
+        target_local_path = get_item_local_path(target_item)
+        if not target_local_path:
+            return jsonify({'error': 'Cannot determine local path for target item'}), 404
+
+        source_local_path = get_item_local_path(source_item)
+        if not source_local_path:
+            return jsonify({'error': 'Cannot determine local path for source item'}), 404
+
+        source_theme_path = source_local_path / 'theme.mp3'
+        if not source_theme_path.exists() or source_theme_path.stat().st_size == 0:
+            return jsonify({'error': 'Source item has no local theme to copy'}), 404
+
+        target_theme_path = target_local_path / 'theme.mp3'
+        if target_theme_path.exists() and target_theme_path.stat().st_size > 0 and not overwrite:
+            return jsonify({'error': 'Theme already exists', 'exists': True}), 409
+
+        target_local_path.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(source_theme_path), str(target_theme_path))
+
+        logger.info(
+            'Copied theme from %s (%s) to %s (%s)',
+            source_item.title, source_theme_path, target_item.title, target_theme_path,
+        )
+        send_pushover_notification('Theme Copied', f'{target_item.title} theme copied from {source_item.title}')
+        item_dict, _ = _sync_cached_item(target_item)
+        return jsonify({'success': True, 'path': str(target_theme_path), 'item': item_dict})
+    except Exception as exc:
+        return error_response(f'Failed to copy theme for {rating_key}', exc=exc)
 
 
 @app.route('/api/items/<int:rating_key>/theme/upload', methods=['POST'])
@@ -962,6 +1276,5 @@ def settings_refresh_cache():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', '8080'))
     debug = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
-    warmup = threading.Thread(target=_warm_library_cache, daemon=True, name='library-cache-warmup')
-    warmup.start()
+    _kick_off_cache_warmup()
     app.run(host='0.0.0.0', port=port, debug=debug)

@@ -25,6 +25,15 @@
     </div>
   </header>
 
+  <!-- Startup overlay shown until local theme hydration is complete -->
+  <div id="startup-overlay" class="startup-overlay">
+    <div class="startup-overlay-card">
+      <div class="spinner"></div>
+      <h2>Starting up Themarr…</h2>
+      <p id="startup-overlay-message">Preparing library theme status…</p>
+    </div>
+  </div>
+
   <!-- Layout -->
   <div class="app-layout">
     <!-- Sidebar -->
@@ -191,6 +200,48 @@
         <button class="btn btn-secondary" onclick="closeModal('modal-download')">Cancel</button>
         <button id="btn-preview-plex" class="btn btn-secondary" onclick="previewPlexTheme()">Preview</button>
         <button id="btn-confirm-download" class="btn btn-primary" onclick="confirmDownload()">Download</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Copy theme modal -->
+  <div id="modal-copy-theme" class="modal-overlay hidden" onclick="closeModal('modal-copy-theme', event)">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Copy Theme From…</h3>
+        <button class="modal-close" onclick="closeModal('modal-copy-theme')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>Select a source movie or TV show whose local <code>theme.mp3</code> should be copied to <strong id="copy-target-item-title"></strong>.</p>
+
+        <div class="form-group">
+          <label for="copy-theme-source-library">Source library</label>
+          <select id="copy-theme-source-library" class="form-control">
+            <option value="">Loading libraries…</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="copy-theme-source-item">Source item (must already have a local theme)</label>
+          <select id="copy-theme-source-item" class="form-control">
+            <option value="">Select a source item…</option>
+          </select>
+        </div>
+
+        <div id="modal-copy-overwrite" class="overwrite-warning hidden">
+          <div class="warning-box">
+            <span>⚠️</span>
+            <span>A theme already exists. Check "Overwrite" to replace it.</span>
+          </div>
+          <label class="checkbox-label">
+            <input type="checkbox" id="copy-overwrite-check">
+            Overwrite existing theme
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('modal-copy-theme')">Cancel</button>
+        <button id="btn-confirm-copy-theme" class="btn btn-primary" onclick="confirmCopyTheme()">Copy Theme</button>
       </div>
     </div>
   </div>

@@ -10,9 +10,11 @@ const ICON_YOUTUBE = `<svg viewBox="0 0 24 24" width="13" height="13" fill="curr
 const ICON_UPLOAD = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>`;
 const ICON_PLAY = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>`;
 const ICON_PAUSE = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`;
+const ICON_COPY = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1zm4 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h12v14z"/></svg>`;
 
 // Action button label HTML: [icon, grid-label, list-label]
 const BTN_PLEX    = [ICON_PLEX,    `${ICON_PLEX} Plex`,    `${ICON_PLEX} Download from Plex`];
+const BTN_COPY    = [ICON_COPY,    `${ICON_COPY} Copy Theme`, `${ICON_COPY} Copy theme from…`];
 const BTN_YOUTUBE = [ICON_YOUTUBE, `${ICON_YOUTUBE} YouTube`, `${ICON_YOUTUBE} Download from YouTube`];
 const BTN_UPLOAD  = [ICON_UPLOAD,  `${ICON_UPLOAD} Upload`, `${ICON_UPLOAD} Upload custom theme`];
 
@@ -34,15 +36,15 @@ const libraryCache = new Map();   // libraryId -> items[], cleared on theme chan
 // Audio state (list-view inline preview)
 let activeAudio = null;   // HTMLAudioElement currently playing
 let activePlayBtn = null; // button element that triggered playback
+const STARTUP_POLL_INTERVAL_MS = 1500;
 
 // ============================================================
 // Init
 // ============================================================
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
   setView(currentView);  // apply default view and sync button active states
   checkPlexStatus();
-  loadLibraries();
 
   // Allow pressing Enter in the YouTube search box to trigger search
   document.getElementById('youtube-search-input').addEventListener('keydown', (e) => {
@@ -58,7 +60,52 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('youtube-overwrite-check').addEventListener('change', () => {
     _syncOverwriteActionButton('btn-confirm-youtube', 'youtube-overwrite-check');
   });
+  document.getElementById('copy-overwrite-check').addEventListener('change', () => {
+    syncCopyThemeConfirmButton();
+  });
+  document.getElementById('copy-theme-source-library').addEventListener('change', async (e) => {
+    await populateCopyThemeSources(e.target.value);
+  });
+  document.getElementById('copy-theme-source-item').addEventListener('change', () => {
+    syncCopyThemeConfirmButton();
+  });
+
+  await waitForStartupHydration();
+  loadLibraries();
 });
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForStartupHydration() {
+  const overlay = document.getElementById('startup-overlay');
+  const message = document.getElementById('startup-overlay-message');
+
+  overlay.classList.remove('hidden');
+  while (true) {
+    try {
+      const data = await apiGet('/api/cache/status');
+      const total = Number(data.sections_total || 0);
+      const completed = Number(data.sections_completed || 0);
+
+      if (data.ready) {
+        overlay.classList.add('hidden');
+        return;
+      }
+
+      if (total > 0) {
+        message.textContent = `Preparing theme state (${completed}/${total} libraries complete)…`;
+      } else {
+        message.textContent = 'Connecting to Plex and scanning theme files…';
+      }
+    } catch (err) {
+      message.textContent = `Waiting for startup cache… (${String(err)})`;
+    }
+
+    await sleep(STARTUP_POLL_INTERVAL_MS);
+  }
+}
 
 function _syncOverwriteActionButton(buttonId, checkboxId, overwriteRequired = true) {
   const button = document.getElementById(buttonId);
@@ -266,10 +313,27 @@ function createItemCard(item) {
   image.src = `/api/poster/${item.ratingKey}`;
   image.alt = item.title;
   image.loading = 'lazy';
+  image.decoding = 'async';
+  poster.classList.add('poster-loading-state');
+
+  const placeholder = document.createElement('div');
+  placeholder.innerHTML = posterPlaceholder(item.type, item.title);
+  const placeholderEl = placeholder.firstChild;
+  poster.appendChild(placeholderEl);
+
+  const loadingOverlay = document.createElement('div');
+  loadingOverlay.className = 'poster-loading';
+  loadingOverlay.innerHTML = '<div class="spinner"></div>';
+  poster.appendChild(loadingOverlay);
+
+  image.onload = () => {
+    poster.classList.remove('poster-loading-state');
+    poster.classList.add('poster-loaded');
+  };
   image.onerror = () => {
-    const placeholder = document.createElement('div');
-    placeholder.innerHTML = posterPlaceholder(item.type, item.title);
-    image.replaceWith(placeholder.firstChild);
+    poster.classList.remove('poster-loading-state');
+    image.remove();
+    loadingOverlay.remove();
   };
   poster.appendChild(image);
 
@@ -306,11 +370,15 @@ function createItemCard(item) {
   const actions = document.createElement('div');
   actions.className = 'item-actions';
 
-  // Button order: Download from Plex → YouTube → Upload → Delete
+  // Button order: Download from Plex → Copy theme from → YouTube → Upload → Delete
   const downloadButton = createActionButton('action-btn action-btn-download', 'Download from Plex', BTN_PLEX[1]);
   downloadButton.disabled = !item.has_plex_theme;
   downloadButton.addEventListener('click', () => openDownloadModal(item.ratingKey, item.title, item.has_local_theme, item.has_plex_theme));
   actions.appendChild(downloadButton);
+
+  const copyButton = createActionButton('action-btn action-btn-copy', 'Copy theme from another item', BTN_COPY[1]);
+  copyButton.addEventListener('click', () => openCopyThemeModal(item.ratingKey, item.title, item.has_local_theme));
+  actions.appendChild(copyButton);
 
   const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', BTN_YOUTUBE[1]);
   youtubeButton.addEventListener('click', () => openYoutubeModal(item.ratingKey, item.title, item.has_local_theme));
@@ -398,11 +466,15 @@ function createItemRow(item) {
   const actions = document.createElement('div');
   actions.className = 'item-actions item-actions-row';
 
-  // Button order: Download from Plex → YouTube → Upload → Delete
+  // Button order: Download from Plex → Copy theme from → YouTube → Upload → Delete
   const downloadButton = createActionButton('action-btn action-btn-download', 'Download from Plex', BTN_PLEX[2]);
   downloadButton.disabled = !item.has_plex_theme;
   downloadButton.addEventListener('click', () => openDownloadModal(item.ratingKey, item.title, item.has_local_theme, item.has_plex_theme));
   actions.appendChild(downloadButton);
+
+  const copyButton = createActionButton('action-btn action-btn-copy', 'Copy theme from another item', BTN_COPY[2]);
+  copyButton.addEventListener('click', () => openCopyThemeModal(item.ratingKey, item.title, item.has_local_theme));
+  actions.appendChild(copyButton);
 
   const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', BTN_YOUTUBE[2]);
   youtubeButton.addEventListener('click', () => openYoutubeModal(item.ratingKey, item.title, item.has_local_theme));
@@ -723,6 +795,150 @@ async function confirmDownload() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Download';
+  }
+}
+
+// ============================================================
+// Copy Theme Modal
+// ============================================================
+async function openCopyThemeModal(ratingKey, title, hasLocalTheme) {
+  activeItemKey = ratingKey;
+  document.getElementById('copy-target-item-title').textContent = title;
+
+  const overwriteDiv = document.getElementById('modal-copy-overwrite');
+  if (hasLocalTheme) {
+    overwriteDiv.classList.remove('hidden');
+    document.getElementById('copy-overwrite-check').checked = false;
+  } else {
+    overwriteDiv.classList.add('hidden');
+  }
+
+  const sourceLibrarySelect = document.getElementById('copy-theme-source-library');
+  sourceLibrarySelect.innerHTML = '<option value="">Loading libraries…</option>';
+  sourceLibrarySelect.disabled = true;
+
+  const sourceItemSelect = document.getElementById('copy-theme-source-item');
+  sourceItemSelect.innerHTML = '<option value="">Select a source item…</option>';
+  sourceItemSelect.disabled = true;
+
+  openModal('modal-copy-theme');
+  syncCopyThemeConfirmButton();
+
+  try {
+    const libraries = await apiGet('/api/libraries');
+    sourceLibrarySelect.innerHTML = '';
+
+    for (const library of libraries) {
+      const option = document.createElement('option');
+      option.value = String(library.key);
+      option.textContent = library.title;
+      sourceLibrarySelect.appendChild(option);
+    }
+
+    if (libraries.length === 0) {
+      sourceLibrarySelect.innerHTML = '<option value="">No libraries available</option>';
+      sourceLibrarySelect.disabled = true;
+      sourceItemSelect.innerHTML = '<option value="">No source items available</option>';
+      sourceItemSelect.disabled = true;
+      syncCopyThemeConfirmButton();
+      return;
+    }
+
+    const preferredLibrary = libraries.find((library) => String(library.key) === String(currentLibraryId));
+    sourceLibrarySelect.value = preferredLibrary ? String(preferredLibrary.key) : String(libraries[0].key);
+    sourceLibrarySelect.disabled = false;
+    await populateCopyThemeSources(sourceLibrarySelect.value);
+  } catch (err) {
+    sourceLibrarySelect.innerHTML = '<option value="">Failed to load libraries</option>';
+    sourceItemSelect.innerHTML = '<option value="">Failed to load source items</option>';
+    sourceLibrarySelect.disabled = true;
+    sourceItemSelect.disabled = true;
+    syncCopyThemeConfirmButton();
+    showToast('error', `Failed to load source libraries: ${err}`);
+  }
+}
+
+async function populateCopyThemeSources(sourceLibraryId) {
+  const sourceItemSelect = document.getElementById('copy-theme-source-item');
+  sourceItemSelect.innerHTML = '<option value="">Loading source items…</option>';
+  sourceItemSelect.disabled = true;
+  syncCopyThemeConfirmButton();
+
+  try {
+    let items = libraryCache.get(sourceLibraryId);
+    if (!items) {
+      items = await apiGet(`/api/libraries/${sourceLibraryId}/items`);
+      libraryCache.set(sourceLibraryId, items);
+    }
+
+    const candidates = items.filter(
+      (item) => item.has_local_theme && String(item.ratingKey) !== String(activeItemKey),
+    );
+
+    sourceItemSelect.innerHTML = '';
+    if (candidates.length === 0) {
+      sourceItemSelect.innerHTML = '<option value="">No items with local themes in this library</option>';
+      sourceItemSelect.disabled = true;
+      syncCopyThemeConfirmButton();
+      return;
+    }
+
+    for (const item of candidates) {
+      const option = document.createElement('option');
+      option.value = String(item.ratingKey);
+      option.textContent = item.year ? `${item.title} (${item.year})` : item.title;
+      sourceItemSelect.appendChild(option);
+    }
+
+    sourceItemSelect.disabled = false;
+    sourceItemSelect.selectedIndex = 0;
+    syncCopyThemeConfirmButton();
+  } catch (err) {
+    sourceItemSelect.innerHTML = '<option value="">Failed to load source items</option>';
+    sourceItemSelect.disabled = true;
+    syncCopyThemeConfirmButton();
+    showToast('error', `Failed to load source items: ${err}`);
+  }
+}
+
+function syncCopyThemeConfirmButton() {
+  const btn = document.getElementById('btn-confirm-copy-theme');
+  const hasSource = Boolean(document.getElementById('copy-theme-source-item').value);
+  const overwriteWarningVisible = !document.getElementById('modal-copy-overwrite').classList.contains('hidden');
+  const overwriteChecked = document.getElementById('copy-overwrite-check').checked;
+  btn.disabled = !hasSource || (overwriteWarningVisible && !overwriteChecked);
+}
+
+async function confirmCopyTheme() {
+  const sourceRatingKey = Number(document.getElementById('copy-theme-source-item').value);
+  if (!sourceRatingKey) {
+    showToast('error', 'Please select a source item');
+    return;
+  }
+
+  const overwrite = document.getElementById('copy-overwrite-check').checked;
+  const btn = document.getElementById('btn-confirm-copy-theme');
+  btn.disabled = true;
+  btn.textContent = 'Copying…';
+
+  try {
+    const data = await apiPost(`/api/items/${activeItemKey}/theme/copy`, { sourceRatingKey, overwrite });
+    if (data.error && data.exists) {
+      showToast('info', 'Theme already exists. Enable overwrite to replace it.');
+    } else if (data.success) {
+      showToast('success', 'Theme copied successfully!');
+      closeModal('modal-copy-theme');
+      if (!applyServerItemUpdate(data.item)) {
+        await refreshItem(activeItemKey);
+      }
+    } else {
+      showToast('error', data.error || 'Copy failed');
+    }
+  } catch (err) {
+    showToast('error', String(err));
+  } finally {
+    btn.textContent = 'Copy Theme';
+    syncCopyThemeConfirmButton();
   }
 }
 

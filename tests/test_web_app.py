@@ -92,6 +92,27 @@ class TestStatus:
             assert data['error'] == 'Unable to connect to Plex'
 
 
+class TestCacheStatus:
+    def test_cache_status_endpoint(self, client):
+        import web_app
+
+        with web_app._theme_hydration_status_lock:
+            web_app._theme_hydration_status.update({
+                'running': True,
+                'ready': False,
+                'sections_total': 5,
+                'sections_completed': 2,
+            })
+
+        resp = client.get('/api/cache/status')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['running'] is True
+        assert data['ready'] is False
+        assert data['sections_total'] == 5
+        assert data['sections_completed'] == 2
+
+
 class TestLibraries:
     def test_get_libraries(self, client, mock_plex):
         tv_section = MagicMock()
@@ -124,6 +145,7 @@ class TestLibraries:
         assert 'TV Shows' in titles
         assert 'Movies' in titles
         assert 'Music' not in titles
+        assert all('id' in d and 'key' in d and d['id'] == d['key'] for d in data)
 
     def test_get_libraries_error(self, client):
         with patch('web_app.get_plex', side_effect=Exception('Plex error')):
@@ -181,6 +203,22 @@ class TestLibraryItems:
         data = resp.get_json()
         assert data[0]['has_local_theme'] is True
         assert data[0]['theme_size'] > 0
+
+    def test_build_library_items_prefers_section_locations_for_theme_scan(self, mock_plex):
+        import web_app
+
+        section = MagicMock()
+        section.key = 1
+        section.locations = ['/only-this-path']
+        section.all.return_value = []
+        mock_plex.library.sectionByID.return_value = section
+
+        with patch('web_app.scan_local_theme_dirs', return_value={}) as mock_scan, \
+             patch('web_app.get_section_base_paths', return_value={'/fallback-path'}):
+            web_app._build_library_items(1)
+
+        assert mock_scan.call_count == 1
+        assert mock_scan.call_args[0][0] == {'/only-this-path'}
 
 
 class TestGetItemLocalPath:
@@ -339,6 +377,111 @@ class TestThemeUpload:
                            data={'overwrite': 'false',
                                  'file': (io.BytesIO(b'not_audio'), 'theme.wav', 'audio/wav')})
         assert resp.status_code == 400
+
+
+class TestThemeCopy:
+    def test_copy_theme_success(self, client, mock_plex, tmp_path):
+        source_dir = tmp_path / 'Source Show (2020)'
+        target_dir = tmp_path / 'Target Show (2021)'
+        source_dir.mkdir()
+        target_dir.mkdir()
+        (source_dir / 'theme.mp3').write_bytes(b'source_theme_data')
+
+        source = make_mock_show(rating_key=1, title='Source Show', location=str(source_dir))
+        target = make_mock_show(rating_key=2, title='Target Show', location=str(target_dir))
+        mock_plex.fetchItem.side_effect = lambda rating_key: source if int(rating_key) == 1 else target
+
+        resp = client.post('/api/items/2/theme/copy',
+                           json={'sourceRatingKey': 1, 'overwrite': False},
+                           content_type='application/json')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is True
+        assert (target_dir / 'theme.mp3').read_bytes() == b'source_theme_data'
+
+    def test_copy_theme_requires_source_rating_key(self, client, mock_plex):
+        resp = client.post('/api/items/2/theme/copy', json={})
+        assert resp.status_code == 400
+
+    def test_copy_theme_rejects_invalid_source_rating_key(self, client, mock_plex):
+        resp = client.post('/api/items/2/theme/copy', json={'sourceRatingKey': 'abc'})
+        assert resp.status_code == 400
+
+    def test_copy_theme_requires_different_source(self, client, mock_plex):
+        resp = client.post('/api/items/2/theme/copy', json={'sourceRatingKey': 2})
+        assert resp.status_code == 400
+
+    def test_copy_theme_source_missing_theme(self, client, mock_plex, tmp_path):
+        source_dir = tmp_path / 'Source Show (2020)'
+        target_dir = tmp_path / 'Target Show (2021)'
+        source_dir.mkdir()
+        target_dir.mkdir()
+
+        source = make_mock_show(rating_key=1, title='Source Show', location=str(source_dir))
+        target = make_mock_show(rating_key=2, title='Target Show', location=str(target_dir))
+        mock_plex.fetchItem.side_effect = lambda rating_key: source if int(rating_key) == 1 else target
+
+        resp = client.post('/api/items/2/theme/copy', json={'sourceRatingKey': 1, 'overwrite': False})
+        assert resp.status_code == 404
+
+    def test_copy_theme_rejects_existing_target_without_overwrite(self, client, mock_plex, tmp_path):
+        source_dir = tmp_path / 'Source Show (2020)'
+        target_dir = tmp_path / 'Target Show (2021)'
+        source_dir.mkdir()
+        target_dir.mkdir()
+        (source_dir / 'theme.mp3').write_bytes(b'source_theme_data')
+        (target_dir / 'theme.mp3').write_bytes(b'existing_target_theme')
+
+        source = make_mock_show(rating_key=1, title='Source Show', location=str(source_dir))
+        target = make_mock_show(rating_key=2, title='Target Show', location=str(target_dir))
+        mock_plex.fetchItem.side_effect = lambda rating_key: source if int(rating_key) == 1 else target
+
+        resp = client.post('/api/items/2/theme/copy', json={'sourceRatingKey': 1, 'overwrite': False})
+        assert resp.status_code == 409
+        assert resp.get_json()['exists'] is True
+
+    def test_copy_theme_overwrites_existing_target(self, client, mock_plex, tmp_path):
+        source_dir = tmp_path / 'Source Show (2020)'
+        target_dir = tmp_path / 'Target Show (2021)'
+        source_dir.mkdir()
+        target_dir.mkdir()
+        (source_dir / 'theme.mp3').write_bytes(b'new_theme_data')
+        (target_dir / 'theme.mp3').write_bytes(b'old_theme_data')
+
+        source = make_mock_show(rating_key=1, title='Source Show', location=str(source_dir))
+        target = make_mock_show(rating_key=2, title='Target Show', location=str(target_dir))
+        mock_plex.fetchItem.side_effect = lambda rating_key: source if int(rating_key) == 1 else target
+
+        resp = client.post('/api/items/2/theme/copy', json={'sourceRatingKey': 1, 'overwrite': True})
+        assert resp.status_code == 200
+        assert (target_dir / 'theme.mp3').read_bytes() == b'new_theme_data'
+
+    def test_copy_theme_updates_cached_item_state(self, client, mock_plex, tmp_path):
+        import web_app
+
+        source_dir = tmp_path / 'Source Show (2020)'
+        target_dir = tmp_path / 'Target Show (2021)'
+        source_dir.mkdir()
+        target_dir.mkdir()
+        (source_dir / 'theme.mp3').write_bytes(b'source_theme_data')
+
+        source = make_mock_show(rating_key=1, title='Source Show', location=str(source_dir))
+        target = make_mock_show(rating_key=2, title='Target Show', location=str(target_dir))
+        mock_plex.fetchItem.side_effect = lambda rating_key: source if int(rating_key) == 1 else target
+
+        web_app._library_cache[1] = [{
+            'ratingKey': 2,
+            'title': 'Target Show',
+            'has_local_theme': False,
+            'has_plex_theme': True,
+        }]
+
+        resp = client.post('/api/items/2/theme/copy', json={'sourceRatingKey': 1, 'overwrite': False})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['item']['has_local_theme'] is True
+        assert web_app._library_cache[1][0]['has_local_theme'] is True
+
 
 class TestThemeYoutube:
     def test_youtube_missing_url(self, client, mock_plex):
@@ -542,6 +685,34 @@ class TestGetTheme:
 
         resp = client.get('/api/items/1/theme')
         assert resp.status_code == 404
+
+
+class TestPosterCache:
+    def test_get_poster_serves_from_in_memory_cache(self, client, mock_plex):
+        import web_app
+
+        web_app._set_cached_poster(1, b'cached_poster', 'image/jpeg')
+
+        resp = client.get('/api/poster/1')
+        assert resp.status_code == 200
+        assert resp.data == b'cached_poster'
+        mock_plex.fetchItem.assert_not_called()
+
+    def test_get_poster_populates_cache_on_first_fetch(self, client, mock_plex):
+        import web_app
+
+        show = make_mock_show(rating_key=1)
+        mock_plex.fetchItem.return_value = show
+        mock_plex.url.return_value = 'http://plex/poster.jpg'
+        mock_resp = MagicMock()
+        mock_resp.content = b'poster_data'
+        mock_resp.headers = {'content-type': 'image/jpeg'}
+        mock_plex._session.get.return_value = mock_resp
+
+        resp = client.get('/api/poster/1')
+        assert resp.status_code == 200
+        assert resp.data == b'poster_data'
+        assert web_app._get_cached_poster(1)['content'] == b'poster_data'
 
 
 class TestIndexPage:
