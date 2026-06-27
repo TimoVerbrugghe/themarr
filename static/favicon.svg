@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="6" fill="#1a1a2e"/>
+  <!-- Music note path (single eighth note) -->
+  <path d="M21 7v11.26A4 4 0 1 1 19 15V9l-8 2v9.26A4 4 0 1 1 9 17V8.5L21 7z" fill="#e5c07b"/>
+</svg>
