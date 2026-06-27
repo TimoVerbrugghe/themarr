@@ -4,6 +4,12 @@ Themarr manages Plex theme music for TV shows and movies. It includes a Flask-ba
 
 ## Screenshots
 
+Screenshots are kept up-to-date automatically: any PR that touches
+`templates/`, `static/`, or `web_app.py` triggers the
+[screenshots workflow](.github/workflows/screenshots.yml), which uses
+Playwright + mocked Plex data to regenerate all images and commit them back
+to the branch.
+
 ### Dark theme
 
 | Welcome | Poster view (grid) |
@@ -17,6 +23,10 @@ Themarr manages Plex theme music for TV shows and movies. It includes a Flask-ba
 | Bulk select (poster) | Bulk select (list) |
 |---|---|
 | ![Bulk select poster view](screenshots/05_bulk_select_poster.png) | ![Bulk select list view](screenshots/07_bulk_select_list.png) |
+
+| Settings page |
+|---|
+| ![Settings page](screenshots/11_settings.png) |
 
 ### Light theme
 
@@ -33,6 +43,7 @@ Themarr manages Plex theme music for TV shows and movies. It includes a Flask-ba
 - **Web UI** — dark/light theme with in-header toggle (default theme configurable via `DEFAULT_THEME`), poster thumbnails, in-browser audio playback; toggle between **poster (grid)** and **compact list** views; list view includes inline play/pause preview per item
 - **Multi-select** — select any number of items and bulk-download their themes in one click
 - **Per-item actions** — download from Plex (with preview), download from YouTube via `yt-dlp`, upload custom MP3, delete
+- **Settings page** — quick-action buttons (test Plex, refresh libraries, test Pushover, rescan files) and a full environment variable reference table
 - **Sonarr/Radarr webhooks** — auto-download themes when a new series or movie is added; staggered retry loop until Plex picks up the new item
 - **Pushover notifications** — push notification on every theme download (optional)
 - **CLI batch downloader** — process whole TV / movie libraries non-interactively
@@ -127,6 +138,8 @@ Supported webhook event types:
 | `POST` | `/api/bulk/theme/download` | Bulk-download themes (`ratingKeys` list, max 100) |
 | `POST` | `/api/webhooks/sonarr` | Sonarr webhook receiver |
 | `POST` | `/api/webhooks/radarr` | Radarr webhook receiver |
+| `POST` | `/api/settings/test-pushover` | Send a test Pushover notification |
+| `POST` | `/api/settings/rescan` | Rescan local files and return theme counts |
 
 ## CLI batch downloader
 
@@ -163,4 +176,18 @@ docker compose config
 docker build -t themarr:test .
 python3 -m pytest tests/ -v
 ```
+
+### Regenerating screenshots
+
+If you change `templates/index.html`, `static/css/style.css`, or
+`static/js/app.js`, regenerate the screenshots:
+
+```bash
+pip install playwright && playwright install chromium
+python3 scripts/take_screenshots.py
+```
+
+This requires no Plex server — all API calls are intercepted with mock data.
+The `.github/workflows/screenshots.yml` CI workflow does this automatically
+for PRs that touch UI files.
 

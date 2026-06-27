@@ -1,0 +1,62 @@
+name: Update screenshots
+
+# Runs automatically on any PR that modifies web UI files.
+# Starts the Flask app, uses Playwright to capture all UI states with mocked
+# Plex API data, then commits the updated screenshots back to the PR branch.
+#
+# For pull requests from forks (where write access is unavailable), the
+# screenshots are uploaded as a workflow artifact instead.
+
+on:
+  pull_request:
+    paths:
+      - 'templates/**'
+      - 'static/**'
+      - 'web_app.py'
+
+permissions:
+  contents: write
+
+jobs:
+  screenshots:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          # Use a PAT or the default token; write permission is set above.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt playwright
+
+      - name: Install Playwright Chromium
+        run: playwright install --with-deps chromium
+
+      - name: Take screenshots
+        run: python3 scripts/take_screenshots.py
+
+      - name: Commit updated screenshots (same-repo PRs only)
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add screenshots/
+          # Only commit if there are actual changes
+          git diff --cached --quiet || git commit -m "chore: update screenshots [skip ci]"
+          git push
+
+      - name: Upload screenshots as artifact (fork PRs)
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: screenshots/
+          retention-days: 14
