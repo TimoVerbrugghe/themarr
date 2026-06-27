@@ -4,39 +4,39 @@
   <img src="static/logo-themarr.svg" alt="Themarr logo" width="420">
 </p>
 
-Themarr is a web app for managing theme songs for both TV shows and movies.  
-It helps you download theme songs from Plex or YouTube with options to upload your own custom audio and/or copy existing themes between items, then stores them as `theme.mp3` files next to your media. 
+Themarr is a web app for managing theme songs for TV shows and movies.  
+It supports **Plex and Jellyfin libraries side-by-side** and can save themes as local `theme.mp3` files next to your media.
 
-With theme songs in place, Plex can play that theme music while you browse your library items.
+Theme download sources in the web UI:
+
+- **Plex** (provider theme, where available)
+- **ThemerrDB** (matched via IMDB/TVDB IDs for Plex items)
+- **YouTube** (via `yt-dlp`)
+
+You can also upload custom MP3 files and copy existing local themes between items.
 
 ## Features
 
-- **Plex library integration**  
-  Browse your Plex TV and movie libraries directly in Themarr, including poster/list views and quick playback of current themes.
+- **Dual media-server support**  
+  Browse **Plex Libraries** and **Jellyfin Libraries** in separate sidebar groups in one UI.
 
-- **Download theme songs from Plex**  
-  Save a Plex-provided theme as local `theme.mp3` in one click.
+- **Three download sources**  
+  Download from **Plex**, **ThemerrDB**, or **YouTube**.
 
-- **Download theme songs from YouTube**  
-  Paste a YouTube URL and download audio as `theme.mp3`.
-
-- **Upload your own custom theme files**  
-  Upload an MP3 from your device and use it as the show/movie theme.
-
-- **Copy themes between TV shows and movies**  
-  Reuse an existing `theme.mp3` from one item on another item (including cross-library copy).
+- **Upload and copy local themes**  
+  Upload custom MP3 files or copy `theme.mp3` between items/libraries.
 
 - **Bulk actions**  
-  Multi-select multiple items and download themes in batch.
+  Multi-select and bulk download themes from provider source for Plex libraries.
 
 - **Plex webhooks**  
-  Automatically download themes when new items are added to your Plex library.
+  Automatically process new Plex items from webhook events.
 
 - **Pushover notifications (optional)**  
-  Get push notifications when theme downloads complete.
+  Receive push notifications when downloads complete.
 
-- **Dark and light UI themes**  
-  Choose your preferred interface theme and default library view.
+- **Dark/light UI + poster/list views**  
+  Configurable defaults with in-browser preference switching.
 
 ## Quick start (Docker Compose)
 
@@ -48,7 +48,7 @@ Themarr is designed to run with the `docker-compose.yml` in this repository.
    cp .env.example .env
    ```
 
-2. Edit `.env` and set your Plex URL/token and media paths.
+2. Edit `.env` and set your Plex and/or Jellyfin settings plus media paths.
 
 3. Start Themarr:
 
@@ -62,10 +62,9 @@ Themarr is designed to run with the `docker-compose.yml` in this repository.
    http://localhost:8080
    ```
 
-### Important: path mounts must match Plex exactly
+### Important: path mounts must match your media-server container paths
 
-Your TV/movies (and any other Plex library) mount paths in Themarr **must be the same inside-container paths used by your Plex container**.  
-Themarr uses the exact paths reported by Plex.
+Your mounted library paths in Themarr must match the paths reported by your server items so local `theme.mp3` files are resolved correctly.
 
 Example:
 
@@ -75,26 +74,40 @@ volumes:
   - /media/movies:/media/movies
 ```
 
-If Plex uses `/media/tvshows` and `/media/movies`, Themarr must use those same container paths too.
-
 ## Environment variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `PLEX_URL` | Yes | — | Plex server URL (example: `http://192.168.1.100:32400`) |
-| `PLEX_TOKEN` | Yes | — | Plex API token |
+| `PLEX_URL` | No* | — | Plex server URL (example: `http://192.168.1.100:32400`) |
+| `PLEX_TOKEN` | No* | — | Plex API token |
+| `JELLYFIN_URL` | No* | — | Jellyfin server URL (example: `http://192.168.1.50:8096`) |
+| `JELLYFIN_API_KEY` | No* | — | Jellyfin API key |
+| `JELLYFIN_USER_ID` | No | first Jellyfin user | Optional explicit Jellyfin user ID |
 | `TV_SHOWS_HOST_PATH` | Usually | `/mnt/tv` | TV library host path mounted into container at the same path |
 | `MOVIES_HOST_PATH` | Optional | `/mnt/movies` | Movies library host path mounted into container at the same path |
 | `FLASK_DEBUG` | No | `false` | Enables Flask debug mode |
 | `DEFAULT_THEME` | No | `dark` | Default UI theme: `dark` or `light` |
 | `DEFAULT_VIEW` | No | `list` | Default library view: `list` or `grid` |
-| `VERBOSE` | No | `false` | Enables verbose logging |
 | `PUSHOVER_APP_TOKEN` | No | — | Pushover app token (required together with `PUSHOVER_USER_KEY`) |
 | `PUSHOVER_USER_KEY` | No | — | Pushover user/group key (required together with `PUSHOVER_APP_TOKEN`) |
 
+\* Configure at least one provider (Plex and/or Jellyfin).
+
+## Source behavior by provider
+
+| Action | Plex items | Jellyfin items |
+|---|---|---|
+| Download from Plex source | ✅ | ❌ |
+| Preview Plex source theme | ✅ | ❌ |
+| Download from ThemerrDB | ✅ (via IMDB/TVDB) | ❌ |
+| Download from YouTube | ✅ | ✅ |
+| Upload local MP3 | ✅ | ✅ |
+| Copy local theme | ✅ | ✅ |
+| Delete local theme | ✅ | ✅ |
+
 ## Plex Webhooks
 
-Themarr can automatically download themes when new items are added to your Plex library using Plex webhooks.
+Themarr can process Plex webhook events for newly added library items.
 
 ### Setup
 
@@ -104,16 +117,7 @@ Themarr can automatically download themes when new items are added to your Plex 
    ```
    http://<themarr-host>:8080/api/webhooks/plex
    ```
-   Replace `<themarr-host>` with your Themarr server's IP or hostname
-
 4. Click **Save**
-
-### How it works
-
-- When you add a new item to your Plex library, Plex sends a webhook event to Themarr
-- Themarr checks if the item already has a `theme.mp3` file
-- If not, and if the item has a theme in Plex, Themarr downloads it automatically
-- If Pushover notifications are configured, you'll receive a notification when the download completes
 
 ## Screenshots
 

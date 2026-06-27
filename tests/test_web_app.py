@@ -160,6 +160,33 @@ class TestLibraries:
             assert resp.status_code == 500
             assert resp.get_json()['error'] == 'Failed to get libraries'
 
+    def test_get_libraries_includes_jellyfin(self, client, mock_plex):
+        tv_section = MagicMock()
+        tv_section.key = 1
+        tv_section.title = 'TV Shows'
+        tv_section.type = 'show'
+        tv_section.thumb = None
+        tv_section.totalSize = 50
+        mock_plex.library.sections.return_value = [tv_section]
+
+        jellyfin_library = {
+            'id': 'jf-tv',
+            'key': 'jf-tv',
+            'title': 'Jellyfin TV',
+            'type': 'show',
+            'thumb': None,
+            'totalSize': 20,
+            'provider': 'jellyfin',
+        }
+        with patch('web_app.jellyfin_is_configured', return_value=True), \
+             patch('web_app._get_jellyfin_libraries', return_value=[jellyfin_library]):
+            resp = client.get('/api/libraries')
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert any(entry['provider'] == 'plex' for entry in data)
+        assert any(entry['provider'] == 'jellyfin' for entry in data)
+
 
 class TestLibraryItems:
     def test_get_show_items(self, client, mock_plex, tmp_path):
@@ -226,6 +253,23 @@ class TestLibraryItems:
 
         assert mock_scan.call_count == 1
         assert mock_scan.call_args[0][0] == {'/only-this-path'}
+
+    def test_get_jellyfin_items_via_provider_route(self, client):
+        jellyfin_items = [{
+            'id': 'jf-item-1',
+            'ratingKey': 'jf-item-1',
+            'provider': 'jellyfin',
+            'title': 'Jellyfin Show',
+            'type': 'show',
+            'has_plex_theme': False,
+            'has_local_theme': False,
+        }]
+        with patch('web_app._build_library_items', return_value=jellyfin_items):
+            resp = client.get('/api/libraries/jellyfin/jf-lib/items')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data[0]['provider'] == 'jellyfin'
+        assert data[0]['title'] == 'Jellyfin Show'
 
 
 class TestGetItemLocalPath:
@@ -366,6 +410,17 @@ class TestThemePreview:
         assert resp.mimetype == 'audio/mpeg'
         assert resp.data == b'preview_audio'
 
+class TestProviderThemeDownload:
+    def test_jellyfin_download_from_provider_source_not_supported(self, client):
+        resp = client.post('/api/items/jellyfin/abc/theme/download', json={'overwrite': False})
+        assert resp.status_code == 400
+        assert 'only supported for Plex items' in resp.get_json()['error']
+
+    def test_jellyfin_preview_from_provider_source_not_supported(self, client):
+        resp = client.get('/api/items/jellyfin/abc/theme/preview')
+        assert resp.status_code == 400
+        assert 'only supported for Plex items' in resp.get_json()['error']
+
 
 class TestThemeUpload:
     def test_upload_theme(self, client, mock_plex, tmp_path):
@@ -409,6 +464,27 @@ class TestThemeUpload:
                            data={'overwrite': 'false',
                                  'file': (io.BytesIO(b'not_audio'), 'theme.wav', 'audio/wav')})
         assert resp.status_code == 400
+
+
+class TestProviderThemeUpload:
+    def test_upload_theme_jellyfin(self, client, tmp_path):
+        jf_dir = tmp_path / 'Jellyfin Show'
+        jf_dir.mkdir()
+        context = {
+            'provider': 'jellyfin',
+            'item_id': 'jf-item',
+            'title': 'Jellyfin Show',
+            'local_path': jf_dir,
+        }
+        with patch('web_app._get_item_context', return_value=context), \
+             patch('web_app._sync_cached_item_theme_state', return_value=(None, False)):
+            resp = client.post(
+                '/api/items/jellyfin/jf-item/theme/upload',
+                data={'overwrite': 'false',
+                      'file': (io.BytesIO(b'ID3fake_mp3'), 'theme.mp3', 'audio/mpeg')},
+            )
+        assert resp.status_code == 200
+        assert (jf_dir / 'theme.mp3').exists()
 
 
 class TestThemeCopy:
