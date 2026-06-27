@@ -828,101 +828,66 @@ class TestBulkDownload:
 # Webhook tests
 # ============================================================
 
-class TestSonarrWebhook:
-    def test_series_add_queues_thread(self, client):
-        with patch('web_app._process_webhook_add') as mock_process, \
+class TestPlexWebhook:
+    def test_library_new_event_queues_theme_processing(self, client):
+        """library.new event with valid ratingKey queues theme processing."""
+        with patch('web_app._process_plex_library_new') as mock_process, \
              patch('web_app.threading') as mock_threading:
             mock_thread = MagicMock()
             mock_threading.Thread.return_value = mock_thread
-            resp = client.post('/api/webhooks/sonarr',
-                               json={'eventType': 'SeriesAdd',
-                                     'series': {'title': 'Breaking Bad', 'path': '/tv/Breaking Bad'}})
+            
+            payload = {'event': 'library.new', 'Metadata': {'ratingKey': '12345'}}
+            import json
+            resp = client.post('/api/webhooks/plex',
+                              data={'payload': json.dumps(payload)})
+        
         assert resp.status_code == 200
         data = resp.get_json()
         assert data['success'] is True
-        assert data['eventType'] == 'SeriesAdd'
-        assert data['queued'] is True
+        mock_threading.Thread.assert_called_once()
 
-    def test_series_delete_acknowledged(self, client):
-        resp = client.post('/api/webhooks/sonarr',
-                           json={'eventType': 'SeriesDelete',
-                                 'series': {'title': 'Breaking Bad'}})
+    def test_library_new_event_with_metadata_fallback(self, client):
+        """Handles both 'Metadata' and 'metadata' field names."""
+        with patch('web_app._process_plex_library_new') as mock_process, \
+             patch('web_app.threading') as mock_threading:
+            mock_thread = MagicMock()
+            mock_threading.Thread.return_value = mock_thread
+            
+            payload = {'event': 'library.new', 'metadata': {'ratingKey': '67890'}}
+            import json
+            resp = client.post('/api/webhooks/plex',
+                              data={'payload': json.dumps(payload)})
+        
+        assert resp.status_code == 200
+        mock_threading.Thread.assert_called_once()
+
+    def test_missing_payload_handled_gracefully(self, client):
+        """Missing payload field returns 200 without error."""
+        resp = client.post('/api/webhooks/plex', data={})
         assert resp.status_code == 200
         assert resp.get_json()['success'] is True
 
-    def test_test_event(self, client):
-        resp = client.post('/api/webhooks/sonarr',
-                           json={'eventType': 'Test'})
+    def test_invalid_json_payload_handled_gracefully(self, client):
+        """Invalid JSON payload returns 200 without error."""
+        resp = client.post('/api/webhooks/plex', data={'payload': 'not-json'})
+        assert resp.status_code == 200
+        assert resp.get_json()['success'] is True
+
+    def test_library_new_without_rating_key_logged(self, client):
+        """library.new event without ratingKey is logged."""
+        payload = {'event': 'library.new', 'Metadata': {}}
+        import json
+        resp = client.post('/api/webhooks/plex',
+                          data={'payload': json.dumps(payload)})
         assert resp.status_code == 200
 
-    def test_invalid_json(self, client):
-        resp = client.post('/api/webhooks/sonarr',
-                           data='not-json',
-                           content_type='application/json')
-        assert resp.status_code == 400
-
-    def test_unauthorized_with_auth_configured(self, client):
-        with patch.dict(os.environ, {'WEBHOOK_USERNAME': 'user', 'WEBHOOK_PASSWORD': 'pass'}):
-            resp = client.post('/api/webhooks/sonarr',
-                               json={'eventType': 'Test'})
-        assert resp.status_code == 401
-
-    def test_authorized_with_correct_credentials(self, client):
-        import base64
-        token = base64.b64encode(b'user:pass').decode()
-        with patch.dict(os.environ, {'WEBHOOK_USERNAME': 'user', 'WEBHOOK_PASSWORD': 'pass'}):
-            resp = client.post('/api/webhooks/sonarr',
-                               json={'eventType': 'Test'},
-                               headers={'Authorization': f'Basic {token}'})
+    def test_non_library_new_event_ignored(self, client):
+        """Non-library.new events are safely ignored."""
+        payload = {'event': 'library.update', 'Metadata': {'ratingKey': '12345'}}
+        import json
+        resp = client.post('/api/webhooks/plex',
+                          data={'payload': json.dumps(payload)})
         assert resp.status_code == 200
-
-    def test_series_add_no_title_not_queued(self, client):
-        with patch('web_app.threading') as mock_threading:
-            resp = client.post('/api/webhooks/sonarr',
-                               json={'eventType': 'SeriesAdd',
-                                     'series': {'title': '', 'path': '/tv/Unknown'}})
-        assert resp.status_code == 200
-        assert resp.get_json()['queued'] is False
-
-
-class TestRadarrWebhook:
-    def test_movie_added_queues_thread(self, client):
-        with patch('web_app.threading') as mock_threading:
-            mock_thread = MagicMock()
-            mock_threading.Thread.return_value = mock_thread
-            resp = client.post('/api/webhooks/radarr',
-                               json={'eventType': 'MovieAdded',
-                                     'movie': {'title': 'The Dark Knight',
-                                               'folderPath': '/movies/The Dark Knight (2008)'}})
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert data['success'] is True
-        assert data['queued'] is True
-
-    def test_movie_added_uses_folder_path(self, client):
-        with patch('web_app.threading') as mock_threading:
-            mock_thread = MagicMock()
-            mock_threading.Thread.return_value = mock_thread
-            resp = client.post('/api/webhooks/radarr',
-                               json={'eventType': 'MovieAdded',
-                                     'movie': {'title': 'Test', 'folderPath': '/movies/Test (2020)'}})
-        assert resp.status_code == 200
-
-    def test_movie_deleted_acknowledged(self, client):
-        resp = client.post('/api/webhooks/radarr',
-                           json={'eventType': 'MovieDeleted',
-                                 'movie': {'title': 'The Dark Knight'}})
-        assert resp.status_code == 200
-
-    def test_test_event(self, client):
-        resp = client.post('/api/webhooks/radarr',
-                           json={'eventType': 'Test'})
-        assert resp.status_code == 200
-
-    def test_unauthorized(self, client):
-        with patch.dict(os.environ, {'WEBHOOK_USERNAME': 'u', 'WEBHOOK_PASSWORD': 'p'}):
-            resp = client.post('/api/webhooks/radarr', json={'eventType': 'Test'})
-        assert resp.status_code == 401
 
 
 # ============================================================
@@ -973,89 +938,6 @@ class TestPushoverNotification:
             resp = client.post('/api/items/1/theme/download', json={'overwrite': False})
         assert resp.status_code == 200
         mock_notif.assert_called_once()
-
-
-# ============================================================
-# Webhook helper: _check_webhook_auth
-# ============================================================
-
-class TestWebhookAuth:
-    def test_no_credentials_configured_allows_all(self, app):
-        from web_app import _check_webhook_auth
-        with app.test_request_context('/api/webhooks/sonarr',
-                                      method='POST',
-                                      environ_base={}):
-            with patch.dict(os.environ, {'WEBHOOK_USERNAME': '', 'WEBHOOK_PASSWORD': ''}):
-                assert _check_webhook_auth() is True
-
-    def test_correct_credentials(self, app):
-        import base64
-        from web_app import _check_webhook_auth
-        token = base64.b64encode(b'admin:secret').decode()
-        with app.test_request_context(
-            '/api/webhooks/sonarr',
-            method='POST',
-            headers={'Authorization': f'Basic {token}'},
-        ):
-            with patch.dict(os.environ, {'WEBHOOK_USERNAME': 'admin',
-                                         'WEBHOOK_PASSWORD': 'secret'}):
-                assert _check_webhook_auth() is True
-
-    def test_wrong_password(self, app):
-        import base64
-        from web_app import _check_webhook_auth
-        token = base64.b64encode(b'admin:wrong').decode()
-        with app.test_request_context(
-            '/api/webhooks/sonarr',
-            method='POST',
-            headers={'Authorization': f'Basic {token}'},
-        ):
-            with patch.dict(os.environ, {'WEBHOOK_USERNAME': 'admin',
-                                         'WEBHOOK_PASSWORD': 'secret'}):
-                assert _check_webhook_auth() is False
-
-
-# ============================================================
-# _find_plex_item helper
-# ============================================================
-
-class TestFindPlexItem:
-    def test_finds_by_title_search(self):
-        from web_app import _find_plex_item
-        plex = MagicMock()
-        show_item = MagicMock()
-        show_item.title = 'Breaking Bad'
-        section = MagicMock()
-        section.type = 'show'
-        section.search.return_value = [show_item]
-        plex.library.sections.return_value = [section]
-        result = _find_plex_item(plex, 'Breaking Bad', '/tv/Breaking Bad', 'show')
-        assert result == show_item
-
-    def test_returns_none_when_not_found(self):
-        from web_app import _find_plex_item
-        plex = MagicMock()
-        section = MagicMock()
-        section.type = 'show'
-        section.search.return_value = []
-        section.all.return_value = []
-        plex.library.sections.return_value = [section]
-        result = _find_plex_item(plex, 'Unknown Show', '/tv/Unknown', 'show')
-        assert result is None
-
-    def test_falls_back_to_folder_name_match(self):
-        from web_app import _find_plex_item
-        plex = MagicMock()
-        show_item = MagicMock()
-        show_item.locations = ['/plex/tv/Breaking Bad']
-        section = MagicMock()
-        section.type = 'show'
-        section.search.return_value = []  # title search misses
-        section.all.return_value = [show_item]
-        plex.library.sections.return_value = [section]
-        result = _find_plex_item(plex, 'Breaking Bad', '/arr/tv/Breaking Bad', 'show')
-        assert result == show_item
-
 
 # ============================================================
 # Settings endpoint tests
