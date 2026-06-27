@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -365,7 +366,7 @@ def _warm_library_cache():
         logger.warning('Library cache warmup: could not connect to Plex: %s', exc)
         return
 
-    for section in sections:
+    def warm_section(section):
         try:
             items = _build_library_items(section.key)
             with _library_cache_lock:
@@ -373,6 +374,12 @@ def _warm_library_cache():
             logger.info('Library cache warmed: section %s (%s) — %d items', section.key, section.title, len(items))
         except Exception as exc:
             logger.warning('Library cache warmup failed for section %s: %s', section.key, exc)
+
+    max_workers = min(4, max(1, len(sections)))
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='library-cache-warm') as executor:
+        futures = [executor.submit(warm_section, section) for section in sections]
+        for future in as_completed(futures):
+            future.result()
 
     logger.info('Library cache warmup complete.')
 
