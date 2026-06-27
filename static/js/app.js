@@ -43,7 +43,33 @@ document.addEventListener('DOMContentLoaded', () => {
   setView(currentView);  // apply default view and sync button active states
   checkPlexStatus();
   loadLibraries();
+
+  // Allow pressing Enter in the YouTube search box to trigger search
+  document.getElementById('youtube-search-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') doYoutubeSearch();
+  });
+
+  document.getElementById('download-overwrite-check').addEventListener('change', () => {
+    _syncOverwriteActionButton('btn-confirm-download', 'download-overwrite-check');
+  });
+  document.getElementById('upload-overwrite-check').addEventListener('change', () => {
+    _syncOverwriteActionButton('btn-confirm-upload', 'upload-overwrite-check');
+  });
+  document.getElementById('youtube-overwrite-check').addEventListener('change', () => {
+    _syncOverwriteActionButton('btn-confirm-youtube', 'youtube-overwrite-check');
+  });
 });
+
+function _syncOverwriteActionButton(buttonId, checkboxId, overwriteRequired = true) {
+  const button = document.getElementById(buttonId);
+  if (!button) return;
+  if (!overwriteRequired) {
+    button.disabled = false;
+    return;
+  }
+  const checkbox = document.getElementById(checkboxId);
+  button.disabled = !(checkbox && checkbox.checked);
+}
 
 // ============================================================
 // Theme
@@ -577,9 +603,11 @@ async function bulkDownload() {
   if (itemsWithTheme.length > 0) {
     const total = ratingKeys.length;
     const count = itemsWithTheme.length;
+    const selectionLabel = count !== 1 ? 'items' : 'item';
+    const verb = count !== 1 ? 'have' : 'has';
     const msg = count === total
-      ? `All ${count} selected item${count !== 1 ? 's' : ''} already ${count !== 1 ? 'have' : 'has'} a theme. Do you want to overwrite or skip them?`
-      : `${count} of the ${total} selected items already ${count !== 1 ? 'have' : 'has'} a theme. Do you want to overwrite or skip them?`;
+      ? `All ${count} selected ${selectionLabel} already ${verb} a theme. Do you want to overwrite or skip them?`
+      : `${count} of the ${total} selected items already ${verb} a theme. Do you want to overwrite or skip them?`;
     document.getElementById('modal-bulk-overwrite-message').textContent = msg;
     openModal('modal-bulk-overwrite');
     return;
@@ -657,6 +685,7 @@ function openDownloadModal(ratingKey, title, hasLocalTheme, hasPlexTheme) {
   } else {
     overwriteDiv.classList.add('hidden');
   }
+  _syncOverwriteActionButton('btn-confirm-download', 'download-overwrite-check', hasLocalTheme);
 
   document.getElementById('btn-preview-plex').disabled = !hasPlexTheme;
   document.getElementById('modal-download-preview').classList.add('hidden');
@@ -713,6 +742,7 @@ function openUploadModal(ratingKey, title, hasLocalTheme) {
   } else {
     overwriteDiv.classList.add('hidden');
   }
+  _syncOverwriteActionButton('btn-confirm-upload', 'upload-overwrite-check', hasLocalTheme);
 
   openModal('modal-upload');
 }
@@ -760,13 +790,17 @@ async function confirmUpload() {
 }
 
 // ============================================================
-// YouTube Modal
+// YouTube Search & Modal
 // ============================================================
+let currentlyPlayingVideoId = null;
+
 function openYoutubeModal(ratingKey, title, hasLocalTheme) {
   activeItemKey = ratingKey;
   document.getElementById('youtube-item-title').textContent = title;
   document.getElementById('youtube-url-input').value = '';
   document.getElementById('youtube-progress').classList.add('hidden');
+  document.getElementById('youtube-search-results').innerHTML = '';
+  _stopYoutubePlayer();
 
   const overwriteDiv = document.getElementById('modal-youtube-overwrite');
   if (hasLocalTheme) {
@@ -775,14 +809,156 @@ function openYoutubeModal(ratingKey, title, hasLocalTheme) {
   } else {
     overwriteDiv.classList.add('hidden');
   }
+  _syncOverwriteActionButton('btn-confirm-youtube', 'youtube-overwrite-check', hasLocalTheme);
+
+  const defaultQuery = `${title} theme song`;
+  document.getElementById('youtube-search-input').value = defaultQuery;
 
   openModal('modal-youtube');
+  doYoutubeSearch();
+}
+
+async function doYoutubeSearch() {
+  const query = document.getElementById('youtube-search-input').value.trim();
+  if (!query) return;
+
+  _stopYoutubePlayer();
+  document.getElementById('youtube-url-input').value = '';
+
+  const resultsEl = document.getElementById('youtube-search-results');
+  resultsEl.innerHTML = '<div class="yt-search-loading"><div class="spinner"></div><span>Searching YouTube…</span></div>';
+
+  try {
+    const resp = await fetch(`/api/youtube/search?q=${encodeURIComponent(query)}&limit=5`);
+    const data = await resp.json();
+    if (!resp.ok || data.error) {
+      resultsEl.innerHTML = `<div class="yt-search-empty">Search failed: ${data.error || 'Unknown error'}</div>`;
+      return;
+    }
+    if (!data.results || data.results.length === 0) {
+      resultsEl.innerHTML = '<div class="yt-search-empty">No results found.</div>';
+      return;
+    }
+    _renderYoutubeResults(data.results, resultsEl);
+  } catch (err) {
+    resultsEl.innerHTML = `<div class="yt-search-empty">Search failed: ${err.message}</div>`;
+  }
+}
+
+function _renderYoutubeResults(results, container) {
+  container.innerHTML = '';
+  for (const result of results) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'yt-result-wrapper';
+
+    // ── Result row ──
+    const row = document.createElement('div');
+    row.className = 'yt-result';
+    row.dataset.url = result.url;
+    row.addEventListener('click', () => _selectYoutubeResult(result.url, row));
+
+    // Thumbnail
+    const thumb = document.createElement('img');
+    thumb.className = 'yt-result-thumb';
+    thumb.src = result.thumbnail || '';
+    thumb.alt = '';
+    row.appendChild(thumb);
+
+    // Info
+    const info = document.createElement('div');
+    info.className = 'yt-result-info';
+    const titleEl = document.createElement('div');
+    titleEl.className = 'yt-result-title';
+    titleEl.textContent = result.title;
+    info.appendChild(titleEl);
+    const meta = document.createElement('div');
+    meta.className = 'yt-result-meta';
+    const parts = [];
+    if (result.channel) parts.push(result.channel);
+    if (result.duration) parts.push(result.duration);
+    if (result.view_count) parts.push(_formatViewCount(result.view_count) + ' views');
+    meta.textContent = parts.join(' · ');
+    info.appendChild(meta);
+    row.appendChild(info);
+
+    // Play button
+    const playBtn = document.createElement('button');
+    playBtn.className = 'yt-play-btn';
+    playBtn.title = 'Preview';
+    playBtn.innerHTML = '▶';
+    const playerDiv = document.createElement('div');
+    playBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _toggleYoutubePlayer(result.id, playBtn, playerDiv);
+    });
+    row.appendChild(playBtn);
+
+    wrapper.appendChild(row);
+
+    // Inline player (hidden by default)
+    playerDiv.className = 'yt-inline-player';
+    playerDiv.id = `yt-player-${result.id}`;
+    wrapper.appendChild(playerDiv);
+
+    container.appendChild(wrapper);
+  }
+}
+
+function _selectYoutubeResult(url, rowEl) {
+  document.querySelectorAll('.yt-result.selected').forEach(el => el.classList.remove('selected'));
+  rowEl.classList.add('selected');
+  document.getElementById('youtube-url-input').value = url;
+}
+
+function _toggleYoutubePlayer(videoId, playBtn, playerDiv) {
+  // Close any other open player first
+  if (currentlyPlayingVideoId && currentlyPlayingVideoId !== videoId) {
+    const prevPlayer = document.getElementById(`yt-player-${currentlyPlayingVideoId}`);
+    if (prevPlayer) { prevPlayer.innerHTML = ''; prevPlayer.classList.remove('open'); }
+    const prevBtn = document.querySelector(`.yt-play-btn[data-video-id="${currentlyPlayingVideoId}"]`);
+    if (prevBtn) { prevBtn.classList.remove('playing'); prevBtn.innerHTML = '▶'; }
+  }
+
+  if (currentlyPlayingVideoId === videoId) {
+    // Stop
+    playerDiv.innerHTML = '';
+    playerDiv.classList.remove('open');
+    playBtn.classList.remove('playing');
+    playBtn.innerHTML = '▶';
+    currentlyPlayingVideoId = null;
+  } else {
+    // Start
+    const iframe = document.createElement('iframe');
+    iframe.src = `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1`;
+    iframe.allow = 'autoplay; encrypted-media';
+    iframe.setAttribute('allowfullscreen', '');
+    playerDiv.innerHTML = '';
+    playerDiv.appendChild(iframe);
+    playerDiv.classList.add('open');
+    playBtn.dataset.videoId = videoId;
+    playBtn.classList.add('playing');
+    playBtn.innerHTML = '⏹';
+    currentlyPlayingVideoId = videoId;
+  }
+}
+
+function _stopYoutubePlayer() {
+  if (!currentlyPlayingVideoId) return;
+  const prev = document.getElementById(`yt-player-${currentlyPlayingVideoId}`);
+  if (prev) { prev.innerHTML = ''; prev.classList.remove('open'); }
+  currentlyPlayingVideoId = null;
+}
+
+function _formatViewCount(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+  return String(n);
 }
 
 async function confirmYoutube() {
   const url = document.getElementById('youtube-url-input').value.trim();
   if (!url) {
-    showToast('error', 'Please enter a YouTube URL');
+    showToast('error', 'Please select a result or enter a YouTube URL');
     return;
   }
   const overwrite = document.getElementById('youtube-overwrite-check').checked;
@@ -990,13 +1166,16 @@ function closeModal(id, event) {
     previewAudio.pause();
     previewAudio.src = '';
   }
+  if (id === 'modal-youtube') _stopYoutubePlayer();
 }
 
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
+    const wasYoutubeOpen = !document.getElementById('modal-youtube').classList.contains('hidden');
     document.querySelectorAll('.modal-overlay:not(.hidden)').forEach((modal) => {
       modal.classList.add('hidden');
     });
+    if (wasYoutubeOpen) _stopYoutubePlayer();
   }
 });
 

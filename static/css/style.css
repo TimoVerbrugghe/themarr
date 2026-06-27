@@ -643,6 +643,7 @@ a:hover { color: var(--accent-hover); }
   animation: modal-in 0.15s ease-out;
 }
 .modal-sm { max-width: 380px; }
+.modal-lg { max-width: 640px; }
 @keyframes modal-in {
   from { transform: scale(0.95); opacity: 0; }
   to   { transform: scale(1);    opacity: 1; }
@@ -734,6 +735,108 @@ a:hover { color: var(--accent-hover); }
 
 /* Text helpers */
 .text-muted { color: var(--text-dim) !important; }
+
+/* ============================================================
+   YouTube Search Results
+   ============================================================ */
+.yt-search-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.yt-search-bar .form-control { flex: 1; }
+
+.yt-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 300px;
+  overflow-y: auto;
+  border-radius: 4px;
+}
+.yt-search-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.yt-search-empty {
+  padding: 14px 8px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.yt-result-wrapper { display: flex; flex-direction: column; }
+.yt-result {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.yt-result:hover { background: var(--bg-hover); }
+.yt-result.selected {
+  background: var(--bg-active);
+  border-color: var(--border-active);
+}
+.yt-result-thumb {
+  width: 88px;
+  height: 50px;
+  object-fit: cover;
+  border-radius: 3px;
+  flex-shrink: 0;
+  background: var(--bg-form);
+}
+.yt-result-info { flex: 1; min-width: 0; }
+.yt-result-title {
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 3px;
+}
+.yt-result-meta { font-size: 11px; color: var(--text-muted); }
+.yt-play-btn {
+  background: none;
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 0;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.yt-play-btn:hover {
+  color: var(--youtube);
+  border-color: var(--youtube);
+}
+.yt-play-btn.playing {
+  color: var(--youtube);
+  border-color: var(--youtube);
+  background: color-mix(in srgb, var(--youtube) 10%, transparent);
+}
+.yt-inline-player { display: none; }
+.yt-inline-player.open { display: block; }
+.yt-inline-player iframe {
+  width: 100%;
+  height: 180px;
+  border: none;
+  border-radius: 0 0 5px 5px;
+  margin-top: 0;
+  display: block;
+}
 
 /* ============================================================
    Toast Notifications

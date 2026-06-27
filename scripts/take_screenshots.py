@@ -72,10 +72,56 @@ MOCK_TV_ITEMS = [
     }
     for i, (title, year, has_plex, has_local) in enumerate(_TV_ITEMS_RAW)
 ]
+MOCK_YOUTUBE_SEARCH = {
+    "results": [
+        {
+            "id": "ilfYnhXD-bE",
+            "title": "Breaking Bad Main Title Theme (Extended)",
+            "url": "https://www.youtube.com/watch?v=ilfYnhXD-bE",
+            "channel": "Dave Porter - Topic",
+            "duration": "1:16",
+            "thumbnail": "https://i.ytimg.com/vi/ilfYnhXD-bE/hqdefault.jpg",
+            "view_count": 14687926,
+        },
+        {
+            "id": "3U6PSWyv5sc",
+            "title": "Breaking Bad Full Intro Title Sequence",
+            "url": "https://www.youtube.com/watch?v=3U6PSWyv5sc",
+            "channel": "AMC",
+            "duration": "1:16",
+            "thumbnail": "https://i.ytimg.com/vi/3U6PSWyv5sc/hqdefault.jpg",
+            "view_count": 8234567,
+        },
+        {
+            "id": "HEmx23LwFhI",
+            "title": "Breaking Bad - Theme",
+            "url": "https://www.youtube.com/watch?v=HEmx23LwFhI",
+            "channel": "SoundtrackHub",
+            "duration": "0:18",
+            "thumbnail": "https://i.ytimg.com/vi/HEmx23LwFhI/hqdefault.jpg",
+            "view_count": 5123456,
+        },
+        {
+            "id": "NYnDrbv7uJs",
+            "title": "Breaking Bad Main Theme Extended Version",
+            "url": "https://www.youtube.com/watch?v=NYnDrbv7uJs",
+            "channel": "TV Themes",
+            "duration": "11:05",
+            "thumbnail": "https://i.ytimg.com/vi/NYnDrbv7uJs/hqdefault.jpg",
+            "view_count": 2345678,
+        },
+        {
+            "id": "PvcmS31dIPw",
+            "title": "Breaking Bad Theme - 10 Hour Loop",
+            "url": "https://www.youtube.com/watch?v=PvcmS31dIPw",
+            "channel": "LoopMaster",
+            "duration": "10:00:00",
+            "thumbnail": "https://i.ytimg.com/vi/PvcmS31dIPw/hqdefault.jpg",
+            "view_count": 987654,
+        },
+    ]
+}
 
-# ---------------------------------------------------------------------------
-# Helper: start the Flask dev-server in a background thread
-# ---------------------------------------------------------------------------
 
 def _start_flask(port: int = 18080) -> subprocess.Popen:
     """Start web_app.py on *port* as a subprocess and return the Popen handle."""
@@ -129,6 +175,9 @@ def take_screenshots(base_url: str = "http://127.0.0.1:18080") -> None:
         elif "/api/libraries/2/items" in url:
             route.fulfill(status=200, content_type="application/json",
                           body=json.dumps([]))
+        elif "/api/youtube/search" in url:
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps(MOCK_YOUTUBE_SEARCH))
         elif "/api/poster/" in url:
             # Return a transparent 1×1 PNG so poster elements don't break layout
             import base64
@@ -267,6 +316,28 @@ def take_screenshots(base_url: str = "http://127.0.0.1:18080") -> None:
         page.wait_for_timeout(300)
         page.screenshot(path=str(SCREENSHOTS_DIR / "11_settings.png"))
         print("  ✓ 11_settings.png")
+
+        # ------------------------------------------------------------------
+        # 12 — YouTube search modal (dark)
+        # ------------------------------------------------------------------
+        page.close()
+        page = new_page("dark")
+        page.click("text=TV Shows")
+        page.wait_for_selector(".items-list, .items-grid", timeout=5000)
+        page.wait_for_timeout(400)
+        # Click the YouTube button on the first item in list view
+        page.click("#view-btn-list")
+        page.wait_for_selector(".items-list", timeout=3000)
+        page.wait_for_timeout(300)
+        yt_buttons = page.query_selector_all(".action-btn-youtube")
+        if yt_buttons:
+            yt_buttons[0].click()
+            page.wait_for_selector(".yt-result", timeout=5000)
+            page.wait_for_timeout(500)
+            page.screenshot(path=str(SCREENSHOTS_DIR / "12_youtube_search_modal.png"))
+            print("  ✓ 12_youtube_search_modal.png")
+        else:
+            print("  ⚠ 12_youtube_search_modal.png — no YouTube button found, skipped")
 
         page.close()
         browser.close()
