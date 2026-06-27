@@ -360,6 +360,8 @@ def _sync_cached_item(item):
                     section_items[index] = updated_item
                     updated = True
                     break
+            if updated:
+                break
     return updated_item, updated
 
 
