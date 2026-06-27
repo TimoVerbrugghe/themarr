@@ -16,6 +16,9 @@ const BTN_PLEX    = [ICON_PLEX,    `${ICON_PLEX} Plex`,    `${ICON_PLEX} Downloa
 const BTN_YOUTUBE = [ICON_YOUTUBE, `${ICON_YOUTUBE} YouTube`, `${ICON_YOUTUBE} Download from YouTube`];
 const BTN_UPLOAD  = [ICON_UPLOAD,  `${ICON_UPLOAD} Upload`, `${ICON_UPLOAD} Upload custom theme`];
 
+// Capture server-rendered defaults before JS mutates the DOM
+const SERVER_DEFAULT_THEME = document.documentElement.dataset.theme || 'dark';
+
 // State
 let currentLibraryId = null;
 let currentItems = [];
@@ -46,14 +49,19 @@ document.addEventListener('DOMContentLoaded', () => {
 // Theme
 // ============================================================
 function initTheme() {
-  // Priority: localStorage > server default (already set on <html>)
   const saved = localStorage.getItem('themarr-theme');
-  if (saved === 'light' || saved === 'dark') {
+  const savedAgainst = localStorage.getItem('themarr-theme-default');
+  // If the server default has changed since the user last toggled (or no
+  // toggle was ever recorded), discard the stale preference and follow
+  // the server default.
+  if (saved && savedAgainst !== SERVER_DEFAULT_THEME) {
+    localStorage.removeItem('themarr-theme');
+    localStorage.removeItem('themarr-theme-default');
+    applyTheme(SERVER_DEFAULT_THEME);
+  } else if (saved === 'light' || saved === 'dark') {
     applyTheme(saved);
   } else {
-    // Use whatever the server rendered (data-theme attribute)
-    const current = document.documentElement.dataset.theme || 'dark';
-    applyTheme(current);
+    applyTheme(SERVER_DEFAULT_THEME);
   }
 }
 
@@ -70,6 +78,7 @@ function toggleTheme() {
   const current = document.documentElement.dataset.theme || 'dark';
   const next = current === 'dark' ? 'light' : 'dark';
   localStorage.setItem('themarr-theme', next);
+  localStorage.setItem('themarr-theme-default', SERVER_DEFAULT_THEME);
   applyTheme(next);
 }
 
