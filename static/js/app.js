@@ -538,6 +538,7 @@ async function bulkDownload(overwrite) {
   btn.textContent = 'Downloading…';
   try {
     const data = await apiPost('/api/bulk/theme/download', { ratingKeys, overwrite });
+    if (data?.error) throw new Error(data.error);
     const s = data.success?.length ?? 0;
     const sk = data.skipped?.length ?? 0;
     const f = data.failed?.length ?? 0;
