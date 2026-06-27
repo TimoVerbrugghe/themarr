@@ -2,6 +2,20 @@
    Themarr - Frontend Application
    ============================================================ */
 
+// ============================================================
+// SVG icon constants (neutral currentColor)
+// ============================================================
+const ICON_PLEX = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M11.916 0C5.333 0 0 5.333 0 11.916s5.333 11.916 11.916 11.916 11.916-5.333 11.916-11.916S18.499 0 11.916 0zm1.501 16.14L9.143 12l4.274-4.14 1.263.865-3.25 3.275 3.25 3.275z"/></svg>`;
+const ICON_YOUTUBE = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>`;
+const ICON_UPLOAD = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>`;
+const ICON_PLAY = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>`;
+const ICON_PAUSE = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`;
+
+// Action button label HTML: [icon, grid-label, list-label]
+const BTN_PLEX    = [ICON_PLEX,    `${ICON_PLEX} Plex`,    `${ICON_PLEX} Download from Plex`];
+const BTN_YOUTUBE = [ICON_YOUTUBE, `${ICON_YOUTUBE} YouTube`, `${ICON_YOUTUBE} Download from YouTube`];
+const BTN_UPLOAD  = [ICON_UPLOAD,  `${ICON_UPLOAD} Upload`, `${ICON_UPLOAD} Upload custom theme`];
+
 // State
 let currentLibraryId = null;
 let currentItems = [];
@@ -119,6 +133,7 @@ async function selectLibrary(id, title) {
   if (navItem) navItem.classList.add('active');
 
   document.getElementById('welcome-screen').classList.add('hidden');
+  document.getElementById('settings-view').classList.add('hidden');
   document.getElementById('library-view').classList.remove('hidden');
   document.getElementById('library-title').textContent = title;
   document.getElementById('library-stats').innerHTML = '';
@@ -242,20 +257,20 @@ function createItemCard(item) {
   actions.className = 'item-actions';
 
   // Button order: Download from Plex → YouTube → Upload → Delete
-  const downloadButton = createActionButton('action-btn action-btn-download', 'Download from Plex', '↓ Download from Plex');
+  const downloadButton = createActionButton('action-btn action-btn-download', 'Download from Plex', BTN_PLEX[1]);
   downloadButton.disabled = !item.has_plex_theme;
   downloadButton.addEventListener('click', () => openDownloadModal(item.ratingKey, item.title, item.has_local_theme, item.has_plex_theme));
   actions.appendChild(downloadButton);
 
-  const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', '▶ Download from YouTube');
+  const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', BTN_YOUTUBE[1]);
   youtubeButton.addEventListener('click', () => openYoutubeModal(item.ratingKey, item.title, item.has_local_theme));
   actions.appendChild(youtubeButton);
 
-  const uploadButton = createActionButton('action-btn action-btn-upload', 'Upload custom theme', '↑ Upload Custom Theme');
+  const uploadButton = createActionButton('action-btn action-btn-upload', 'Upload custom theme', BTN_UPLOAD[1]);
   uploadButton.addEventListener('click', () => openUploadModal(item.ratingKey, item.title, item.has_local_theme));
   actions.appendChild(uploadButton);
 
-  const deleteButton = createActionButton('action-btn action-btn-delete', 'Delete theme', '🗑 Delete Theme');
+  const deleteButton = createActionButton('action-btn action-btn-delete', 'Delete theme', '🗑 Delete');
   deleteButton.disabled = !item.has_local_theme;
   deleteButton.addEventListener('click', () => openDeleteModal(item.ratingKey, item.title));
   actions.appendChild(deleteButton);
@@ -266,12 +281,12 @@ function createItemCard(item) {
   return card;
 }
 
-function createActionButton(className, title, text) {
+function createActionButton(className, title, html) {
   const button = document.createElement('button');
   button.className = className;
   button.title = title;
   button.type = 'button';
-  button.textContent = text;
+  button.innerHTML = html;
   return button;
 }
 
@@ -325,7 +340,7 @@ function createItemRow(item) {
     playBtn.className = 'action-btn-play-inline';
     playBtn.type = 'button';
     playBtn.title = 'Preview theme';
-    playBtn.textContent = '▶';
+    playBtn.innerHTML = ICON_PLAY;
     playBtn.addEventListener('click', () => toggleInlineAudio(item.ratingKey, playBtn));
     row.appendChild(playBtn);
   }
@@ -334,20 +349,20 @@ function createItemRow(item) {
   actions.className = 'item-actions item-actions-row';
 
   // Button order: Download from Plex → YouTube → Upload → Delete
-  const downloadButton = createActionButton('action-btn action-btn-download', 'Download from Plex', '↓ Plex');
+  const downloadButton = createActionButton('action-btn action-btn-download', 'Download from Plex', BTN_PLEX[2]);
   downloadButton.disabled = !item.has_plex_theme;
   downloadButton.addEventListener('click', () => openDownloadModal(item.ratingKey, item.title, item.has_local_theme, item.has_plex_theme));
   actions.appendChild(downloadButton);
 
-  const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', '▶ YouTube');
+  const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', BTN_YOUTUBE[2]);
   youtubeButton.addEventListener('click', () => openYoutubeModal(item.ratingKey, item.title, item.has_local_theme));
   actions.appendChild(youtubeButton);
 
-  const uploadButton = createActionButton('action-btn action-btn-upload', 'Upload custom theme', '↑ Upload');
+  const uploadButton = createActionButton('action-btn action-btn-upload', 'Upload custom theme', BTN_UPLOAD[2]);
   uploadButton.addEventListener('click', () => openUploadModal(item.ratingKey, item.title, item.has_local_theme));
   actions.appendChild(uploadButton);
 
-  const deleteButton = createActionButton('action-btn action-btn-delete', 'Delete theme', '🗑');
+  const deleteButton = createActionButton('action-btn action-btn-delete', 'Delete theme', '🗑 Delete');
   deleteButton.disabled = !item.has_local_theme;
   deleteButton.addEventListener('click', () => openDeleteModal(item.ratingKey, item.title));
   actions.appendChild(deleteButton);
@@ -366,11 +381,11 @@ function toggleInlineAudio(ratingKey, btn) {
   if (activePlayBtn === btn) {
     if (activeAudio && !activeAudio.paused) {
       activeAudio.pause();
-      btn.textContent = '▶';
+      btn.innerHTML = ICON_PLAY;
       btn.classList.remove('playing');
     } else if (activeAudio) {
       activeAudio.play().catch(() => {});
-      btn.textContent = '⏸';
+      btn.innerHTML = ICON_PAUSE;
       btn.classList.add('playing');
     }
     return;
@@ -382,7 +397,7 @@ function toggleInlineAudio(ratingKey, btn) {
   // Create and play a new audio element
   const audio = new Audio(src);
   audio.addEventListener('ended', () => {
-    btn.textContent = '▶';
+    btn.innerHTML = ICON_PLAY;
     btn.classList.remove('playing');
     activeAudio = null;
     activePlayBtn = null;
@@ -390,16 +405,16 @@ function toggleInlineAudio(ratingKey, btn) {
   audio.addEventListener('pause', () => {
     // Sync button state whenever audio pauses (e.g. navigation)
     if (activePlayBtn === btn) {
-      btn.textContent = '▶';
+      btn.innerHTML = ICON_PLAY;
       btn.classList.remove('playing');
     }
   });
   audio.play().catch(() => {
-    btn.textContent = '▶';
+    btn.innerHTML = ICON_PLAY;
     btn.classList.remove('playing');
   });
 
-  btn.textContent = '⏸';
+  btn.innerHTML = ICON_PAUSE;
   btn.classList.add('playing');
   activeAudio = audio;
   activePlayBtn = btn;
@@ -411,7 +426,7 @@ function stopInlineAudio() {
     activeAudio = null;
   }
   if (activePlayBtn) {
-    activePlayBtn.textContent = '▶';
+    activePlayBtn.innerHTML = ICON_PLAY;
     activePlayBtn.classList.remove('playing');
     activePlayBtn = null;
   }
@@ -771,6 +786,88 @@ async function refreshItem(ratingKey) {
   } catch (err) {
     console.error('Failed to refresh item', err);
     showToast('error', 'Theme list refresh failed. Reload the library to sync state.');
+  }
+}
+
+// ============================================================
+// Settings page
+// ============================================================
+function showSettingsPage(event) {
+  if (event) event.preventDefault();
+  currentLibraryId = null;
+  stopInlineAudio();
+
+  document.getElementById('welcome-screen').classList.add('hidden');
+  document.getElementById('library-view').classList.add('hidden');
+  document.getElementById('settings-view').classList.remove('hidden');
+
+  document.querySelectorAll('.library-nav-item').forEach((el) => el.classList.remove('active'));
+  document.getElementById('settings-nav-item').classList.add('active');
+
+  // Reset action result banner
+  const result = document.getElementById('settings-action-result');
+  result.className = 'settings-action-result hidden';
+  result.textContent = '';
+}
+
+function showSettingsResult(ok, message) {
+  const el = document.getElementById('settings-action-result');
+  el.className = `settings-action-result ${ok ? 'result-ok' : 'result-err'}`;
+  el.textContent = message;
+}
+
+async function settingsTestPlex() {
+  showSettingsResult(true, 'Connecting to Plex…');
+  try {
+    const data = await apiGet('/api/status');
+    if (data.connected) {
+      showSettingsResult(true, `✓ Connected to "${data.server_name}" (Plex Media Server v${data.version})`);
+    } else {
+      showSettingsResult(false, `✗ Not connected: ${data.error || 'Unknown error'}`);
+    }
+  } catch (err) {
+    showSettingsResult(false, `✗ ${err}`);
+  }
+}
+
+async function settingsRefreshLibraries() {
+  showSettingsResult(true, 'Refreshing Plex libraries…');
+  try {
+    await loadLibraries();
+    showSettingsResult(true, '✓ Plex libraries refreshed successfully.');
+  } catch (err) {
+    showSettingsResult(false, `✗ Failed to refresh libraries: ${err}`);
+  }
+}
+
+async function settingsTestPushover() {
+  showSettingsResult(true, 'Sending test notification…');
+  try {
+    const data = await apiPost('/api/settings/test-pushover', {});
+    if (data.error) {
+      showSettingsResult(false, `✗ ${data.error}`);
+    } else {
+      showSettingsResult(true, '✓ Test notification sent successfully. Check your Pushover app.');
+    }
+  } catch (err) {
+    showSettingsResult(false, `✗ ${err}`);
+  }
+}
+
+async function settingsRescan() {
+  showSettingsResult(true, 'Scanning libraries for theme.mp3 files…');
+  try {
+    const data = await apiPost('/api/settings/rescan', {});
+    if (data.error) {
+      showSettingsResult(false, `✗ ${data.error}`);
+    } else {
+      showSettingsResult(
+        true,
+        `✓ Scan complete — ${data.total} items found: ${data.with_theme} with theme, ${data.without_theme} without.`,
+      );
+    }
+  } catch (err) {
+    showSettingsResult(false, `✗ ${err}`);
   }
 }
 

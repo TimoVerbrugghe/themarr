@@ -730,3 +730,64 @@ class TestFindPlexItem:
         plex.library.sections.return_value = [section]
         result = _find_plex_item(plex, 'Breaking Bad', '/arr/tv/Breaking Bad', 'show')
         assert result == show_item
+
+
+# ============================================================
+# Settings endpoint tests
+# ============================================================
+
+class TestSettingsTestPushover:
+    def test_returns_400_when_not_configured(self, client):
+        with patch.dict(os.environ, {}, clear=True):
+            resp = client.post('/api/settings/test-pushover')
+        assert resp.status_code == 400
+        assert 'PUSHOVER_APP_TOKEN' in resp.get_json()['error']
+
+    def test_success_with_valid_config(self, client):
+        with patch('web_app.http_requests') as mock_req, \
+             patch.dict(os.environ, {'PUSHOVER_APP_TOKEN': 'tok', 'PUSHOVER_USER_KEY': 'usr'}):
+            mock_resp = MagicMock()
+            mock_req.post.return_value = mock_resp
+            resp = client.post('/api/settings/test-pushover')
+        assert resp.status_code == 200
+        assert resp.get_json()['success'] is True
+
+    def test_returns_500_on_pushover_error(self, client):
+        with patch('web_app.http_requests') as mock_req, \
+             patch.dict(os.environ, {'PUSHOVER_APP_TOKEN': 'tok', 'PUSHOVER_USER_KEY': 'usr'}):
+            mock_req.post.side_effect = Exception('Network error')
+            resp = client.post('/api/settings/test-pushover')
+        assert resp.status_code == 500
+
+
+class TestSettingsRescan:
+    def test_rescan_counts_themes(self, client, mock_plex, tmp_path):
+        show1 = make_mock_show(rating_key=1, title='Show A', location='/plex/tv/Show A')
+        show2 = make_mock_show(rating_key=2, title='Show B', location='/plex/tv/Show B')
+
+        show_a_dir = tmp_path / 'Show A'
+        show_a_dir.mkdir()
+        (show_a_dir / 'theme.mp3').write_bytes(b'\xff\xfb' * 100)
+
+        (tmp_path / 'Show B').mkdir()  # no theme
+
+        section = MagicMock()
+        section.type = 'show'
+        section.all.return_value = [show1, show2]
+        mock_plex.library.sections.return_value = [section]
+
+        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
+            resp = client.post('/api/settings/rescan')
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is True
+        assert data['total'] == 2
+        assert data['with_theme'] == 1
+        assert data['without_theme'] == 1
+
+    def test_rescan_returns_error_on_plex_failure(self, client):
+        with patch('web_app.get_plex', side_effect=Exception('Plex error')):
+            resp = client.post('/api/settings/rescan')
+        assert resp.status_code == 500
+        assert 'error' in resp.get_json()

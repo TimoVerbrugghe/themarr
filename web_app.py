@@ -708,6 +708,61 @@ def radarr_webhook():
     return jsonify({'success': True, 'eventType': event_type})
 
 
+# ============================================================
+# Settings endpoints
+# ============================================================
+
+@app.route('/api/settings/test-pushover', methods=['POST'])
+def settings_test_pushover():
+    """Send a test Pushover notification to verify connectivity."""
+    token = os.getenv('PUSHOVER_APP_TOKEN')
+    user_key = os.getenv('PUSHOVER_USER_KEY')
+    if not token or not user_key:
+        return jsonify({
+            'error': 'Pushover is not configured. Set PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY.',
+        }), 400
+    try:
+        resp = http_requests.post(
+            'https://api.pushover.net/1/messages.json',
+            data={'token': token, 'user': user_key,
+                  'title': 'Themarr - Test Notification',
+                  'message': 'Pushover notifications are working correctly.'},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return jsonify({'success': True})
+    except Exception as exc:
+        return error_response('Failed to send test Pushover notification', exc=exc)
+
+
+@app.route('/api/settings/rescan', methods=['POST'])
+def settings_rescan():
+    """Rescan all media library items and count local theme.mp3 files."""
+    try:
+        plex = get_plex()
+        sections = plex.library.sections()
+        total = 0
+        with_theme = 0
+        for section in sections:
+            if section.type not in ('show', 'movie'):
+                continue
+            for item in section.all():
+                total += 1
+                local_path = get_item_local_path(item)
+                if local_path:
+                    theme_path = local_path / 'theme.mp3'
+                    if theme_path.exists() and theme_path.stat().st_size > 0:
+                        with_theme += 1
+        return jsonify({
+            'success': True,
+            'total': total,
+            'with_theme': with_theme,
+            'without_theme': total - with_theme,
+        })
+    except Exception as exc:
+        return error_response('Failed to rescan libraries', exc=exc)
+
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', '8080'))
     debug = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'

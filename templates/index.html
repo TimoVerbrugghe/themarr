@@ -28,9 +28,16 @@
   <div class="app-layout">
     <!-- Sidebar -->
     <aside class="sidebar">
-      <div class="sidebar-heading">Libraries</div>
+      <div class="sidebar-heading">Plex Libraries</div>
       <nav id="library-nav" class="library-nav">
         <div class="sidebar-loading">Loading libraries…</div>
+      </nav>
+      <div class="sidebar-divider"></div>
+      <nav class="sidebar-nav-bottom">
+        <a href="#" class="library-nav-item" id="settings-nav-item" onclick="showSettingsPage(event)">
+          <span class="library-nav-icon">⚙️</span>
+          <span class="library-nav-name">Settings</span>
+        </a>
       </nav>
     </aside>
 
@@ -82,6 +89,75 @@
         <div id="items-loading" class="items-loading hidden">
           <div class="spinner"></div>
           <span>Loading items…</span>
+        </div>
+      </div>
+
+      <!-- Settings view -->
+      <div id="settings-view" class="settings-view hidden">
+        <h1 class="library-title">Settings</h1>
+
+        <!-- Quick actions -->
+        <div class="settings-section">
+          <h2 class="settings-section-title">Actions</h2>
+          <div class="settings-actions">
+            <button class="btn btn-secondary settings-action-btn" onclick="settingsTestPlex()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M11.916 0C5.333 0 0 5.333 0 11.916s5.333 11.916 11.916 11.916 11.916-5.333 11.916-11.916S18.499 0 11.916 0zm1.501 16.14L9.143 12l4.274-4.14 1.263.865-3.25 3.275 3.25 3.275z"/></svg>
+              Test Plex Connectivity
+            </button>
+            <button class="btn btn-secondary settings-action-btn" onclick="settingsRefreshLibraries()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z"/></svg>
+              Refresh Plex Libraries
+            </button>
+            <button class="btn btn-secondary settings-action-btn" onclick="settingsTestPushover()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1z"/></svg>
+              Test Pushover
+            </button>
+            <button class="btn btn-secondary settings-action-btn" onclick="settingsRescan()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+              Rescan Files
+            </button>
+          </div>
+          <div id="settings-action-result" class="settings-action-result hidden"></div>
+        </div>
+
+        <!-- Environment variables reference -->
+        <div class="settings-section">
+          <h2 class="settings-section-title">Environment Variables</h2>
+          <table class="settings-envtable">
+            <thead>
+              <tr>
+                <th>Variable</th>
+                <th>Default</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="settings-envtable-group"><td colspan="3">Plex</td></tr>
+              <tr><td><code>PLEX_URL</code></td><td><em>required</em></td><td>Base URL of your Plex server (e.g. <code>http://192.168.1.100:32400</code>)</td></tr>
+              <tr><td><code>PLEX_TOKEN</code></td><td><em>required</em></td><td>Plex authentication token. Find it via your Plex account settings.</td></tr>
+              <tr class="settings-envtable-group"><td colspan="3">Media paths</td></tr>
+              <tr><td><code>TV_SHOWS_HOST_PATH</code></td><td>—</td><td>Host filesystem path for TV shows, mounted into the container.</td></tr>
+              <tr><td><code>MOVIES_HOST_PATH</code></td><td>—</td><td>Host filesystem path for movies, mounted into the container.</td></tr>
+              <tr><td><code>TV_SHOWS_PATH</code> / <code>TV_PATH</code></td><td><code>/tv</code></td><td>Container path for TV shows.</td></tr>
+              <tr><td><code>MOVIES_PATH</code></td><td><code>/movies</code></td><td>Container path for movies.</td></tr>
+              <tr class="settings-envtable-group"><td colspan="3">Web UI</td></tr>
+              <tr><td><code>WEB_PORT</code></td><td><code>8080</code></td><td>Port the web interface listens on.</td></tr>
+              <tr><td><code>DEFAULT_THEME</code></td><td><code>dark</code></td><td>Initial colour theme (<code>dark</code> or <code>light</code>). Users can override this in-browser.</td></tr>
+              <tr><td><code>FLASK_DEBUG</code></td><td><code>false</code></td><td>Enable Flask debug mode. Do not use in production.</td></tr>
+              <tr class="settings-envtable-group"><td colspan="3">Logging &amp; behaviour</td></tr>
+              <tr><td><code>VERBOSE</code></td><td><code>false</code></td><td>Enable verbose logging in the CLI batch downloader.</td></tr>
+              <tr><td><code>VERBOSE_MATCHING</code></td><td><code>false</code></td><td>Log extra detail about library path matching in the CLI.</td></tr>
+              <tr><td><code>OVERWRITE</code></td><td><code>false</code></td><td>Overwrite existing <code>theme.mp3</code> files when running the CLI batch downloader.</td></tr>
+              <tr class="settings-envtable-group"><td colspan="3">Notifications (optional)</td></tr>
+              <tr><td><code>PUSHOVER_APP_TOKEN</code></td><td>—</td><td>Pushover application token. Leave blank to disable push notifications.</td></tr>
+              <tr><td><code>PUSHOVER_USER_KEY</code></td><td>—</td><td>Pushover user/group key. Leave blank to disable push notifications.</td></tr>
+              <tr class="settings-envtable-group"><td colspan="3">Webhooks (optional)</td></tr>
+              <tr><td><code>WEBHOOK_USERNAME</code></td><td>—</td><td>Basic-auth username for the Sonarr/Radarr webhook endpoints.</td></tr>
+              <tr><td><code>WEBHOOK_PASSWORD</code></td><td>—</td><td>Basic-auth password for the Sonarr/Radarr webhook endpoints.</td></tr>
+              <tr><td><code>PLEX_RETRY_ATTEMPTS</code></td><td><code>10</code></td><td>Max number of Plex lookup attempts after a webhook event.</td></tr>
+              <tr><td><code>PLEX_RETRY_DELAY</code></td><td><code>30</code></td><td>Seconds between each Plex lookup attempt (linearly increasing).</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </main>
