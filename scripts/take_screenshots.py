@@ -3,7 +3,9 @@
 Automated screenshot script for Themarr web UI.
 
 Uses Playwright to launch a real browser, intercepts all /api/* calls with
-mock data, and captures screenshots of every major UI state.  Screenshots are
+mock data, and captures screenshots of every major UI state. Generated mock
+poster/thumbnail artwork is served so card visuals are meaningful in captures.
+Screenshots are
 written to the screenshots/ directory in the repo root.
 
 Usage:
@@ -16,9 +18,9 @@ The script requires no running Plex server — all API responses are mocked.
 
 import json
 import os
+import re
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -38,8 +40,8 @@ MOCK_STATUS = {
 }
 
 MOCK_LIBRARIES = [
-    {"id": 1, "title": "TV Shows", "type": "show", "totalSize": 42},
-    {"id": 2, "title": "Movies",   "type": "movie", "totalSize": 18},
+    {"id": 1, "key": 1, "title": "TV Shows", "type": "show", "totalSize": 42},
+    {"id": 2, "key": 2, "title": "Movies",   "type": "movie", "totalSize": 18},
 ]
 
 # 12 realistic-looking TV show entries
@@ -63,7 +65,7 @@ MOCK_TV_ITEMS = [
         "ratingKey": 100 + i,
         "title": title,
         "year": year,
-        "thumb": None,
+        "thumb": f"/library/metadata/{100 + i}/thumb",
         "type": "show",
         "has_plex_theme": has_plex,
         "has_local_theme": has_local,
@@ -72,6 +74,34 @@ MOCK_TV_ITEMS = [
     }
     for i, (title, year, has_plex, has_local) in enumerate(_TV_ITEMS_RAW)
 ]
+
+_MOVIE_ITEMS_RAW = [
+    ("Dune", 2021, True, True),
+    ("Inception", 2010, True, True),
+    ("Oppenheimer", 2023, True, False),
+    ("Interstellar", 2014, True, False),
+    ("The Dark Knight", 2008, True, True),
+    ("The Batman", 2022, False, False),
+]
+
+MOCK_MOVIE_ITEMS = [
+    {
+        "ratingKey": 300 + i,
+        "title": title,
+        "year": year,
+        "thumb": f"/library/metadata/{300 + i}/thumb",
+        "type": "movie",
+        "has_plex_theme": has_plex,
+        "has_local_theme": has_local,
+        "theme_size": 245760 if has_local else 0,
+        "local_path": f"/movies/{title.replace(' ', '_')}",
+    }
+    for i, (title, year, has_plex, has_local) in enumerate(_MOVIE_ITEMS_RAW)
+]
+
+MOCK_ITEMS_BY_KEY = {
+    int(item["ratingKey"]): item for item in (MOCK_TV_ITEMS + MOCK_MOVIE_ITEMS)
+}
 MOCK_YOUTUBE_SEARCH = {
     "results": [
         {
@@ -123,6 +153,36 @@ MOCK_YOUTUBE_SEARCH = {
 }
 
 
+def _safe_svg_text(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def _build_mock_poster_svg(title: str, media_type: str, width: int, height: int) -> bytes:
+    icon = "📺" if media_type == "show" else "🎬"
+    top = "#2f5d8a" if media_type == "show" else "#6b3d87"
+    bottom = "#1b2735" if media_type == "show" else "#2d1f3a"
+    safe_title = _safe_svg_text(title)
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="{top}"/>
+      <stop offset="100%" stop-color="{bottom}"/>
+    </linearGradient>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#bg)"/>
+  <rect x="12" y="12" width="{width - 24}" height="{height - 24}" rx="12" fill="none" stroke="rgba(255,255,255,0.28)" stroke-width="2"/>
+  <text x="50%" y="44%" text-anchor="middle" font-size="54">{icon}</text>
+  <text x="50%" y="66%" text-anchor="middle" fill="#eef4ff" font-family="Arial, sans-serif" font-size="22" font-weight="700">{safe_title}</text>
+</svg>"""
+    return svg.encode("utf-8")
+
+
 def _start_flask(port: int = 18080) -> subprocess.Popen:
     """Start web_app.py on *port* as a subprocess and return the Popen handle."""
     env = os.environ.copy()
@@ -166,6 +226,12 @@ def take_screenshots(base_url: str = "http://127.0.0.1:18080") -> None:
         if "/api/status" in url:
             route.fulfill(status=200, content_type="application/json",
                           body=json.dumps(MOCK_STATUS))
+        elif "/api/cache/status" in url:
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"ready": True, "sections_total": 2, "sections_completed": 2}),
+            )
         elif "/api/libraries" in url and "/items" not in url:
             route.fulfill(status=200, content_type="application/json",
                           body=json.dumps(MOCK_LIBRARIES))
@@ -174,17 +240,29 @@ def take_screenshots(base_url: str = "http://127.0.0.1:18080") -> None:
                           body=json.dumps(MOCK_TV_ITEMS))
         elif "/api/libraries/2/items" in url:
             route.fulfill(status=200, content_type="application/json",
-                          body=json.dumps([]))
+                          body=json.dumps(MOCK_MOVIE_ITEMS))
         elif "/api/youtube/search" in url:
             route.fulfill(status=200, content_type="application/json",
                           body=json.dumps(MOCK_YOUTUBE_SEARCH))
         elif "/api/poster/" in url:
-            # Return a transparent 1×1 PNG so poster elements don't break layout
-            import base64
-            png_1x1 = base64.b64decode(
-                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+            match = re.search(r"/api/poster/(\d+)", url)
+            rating_key = int(match.group(1)) if match else None
+            item = MOCK_ITEMS_BY_KEY.get(rating_key, {})
+            poster_svg = _build_mock_poster_svg(
+                title=str(item.get("title", "Themarr")),
+                media_type=str(item.get("type", "show")),
+                width=320,
+                height=480,
             )
-            route.fulfill(status=200, content_type="image/png", body=png_1x1)
+            route.fulfill(status=200, content_type="image/svg+xml", body=poster_svg)
+        elif "i.ytimg.com/vi/" in url:
+            thumb_svg = _build_mock_poster_svg(
+                title="YouTube Preview",
+                media_type="movie",
+                width=320,
+                height=180,
+            )
+            route.fulfill(status=200, content_type="image/svg+xml", body=thumb_svg)
         else:
             route.continue_()
 
@@ -194,11 +272,21 @@ def take_screenshots(base_url: str = "http://127.0.0.1:18080") -> None:
         def new_page(theme: str = "dark") -> object:
             page = browser.new_page(viewport={"width": 1400, "height": 900})
             page.route("**/api/**", route_handler)
-            # Pre-set theme in localStorage before navigating
-            page.goto(base_url)
-            page.evaluate(f"localStorage.setItem('themarr-theme', '{theme}')")
-            page.reload()
-            page.wait_for_load_state("networkidle")
+            page.route("https://i.ytimg.com/**", route_handler)
+            # Pre-set theme in localStorage before app scripts execute.
+            page.add_init_script(
+                f"""
+                window.localStorage.setItem('themarr-theme', {json.dumps(theme)});
+                // Keep this aligned with the server-rendered default in this script.
+                window.localStorage.setItem('themarr-theme-default', 'dark');
+                window.localStorage.setItem('themarr-view', 'list');
+                """,
+            )
+            page.goto(base_url, wait_until="networkidle")
+            page.wait_for_function(
+                "(expected) => document.documentElement.dataset.theme === expected",
+                arg=theme,
+            )
             return page
 
         # ------------------------------------------------------------------
@@ -338,6 +426,18 @@ def take_screenshots(base_url: str = "http://127.0.0.1:18080") -> None:
             print("  ✓ 12_youtube_search_modal.png")
         else:
             print("  ⚠ 12_youtube_search_modal.png — no YouTube button found, skipped")
+
+        # ------------------------------------------------------------------
+        # 13 — Copy theme modal (dark)
+        # ------------------------------------------------------------------
+        page.click("#modal-youtube .modal-close")
+        page.wait_for_selector("#modal-youtube", state="hidden", timeout=5000)
+        page.locator(".action-btn-copy").first.click()
+        page.wait_for_selector("#modal-copy-theme:not(.hidden)", timeout=5000)
+        page.wait_for_selector("#copy-theme-source-item:not([disabled])", timeout=5000)
+        page.wait_for_timeout(500)
+        page.screenshot(path=str(SCREENSHOTS_DIR / "13_copy_theme_modal.png"))
+        print("  ✓ 13_copy_theme_modal.png")
 
         page.close()
         browser.close()

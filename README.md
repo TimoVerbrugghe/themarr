@@ -33,6 +33,10 @@ Screenshots are kept up-to-date automatically:
 |---|
 | ![Settings page](screenshots/11_settings.png) |
 
+| YouTube downloader modal | Copy theme modal |
+|---|---|
+| ![YouTube downloader modal](screenshots/12_youtube_search_modal.png) | ![Copy theme modal](screenshots/13_copy_theme_modal.png) |
+
 ### Light theme
 
 | Welcome | Poster view (grid) |
@@ -205,6 +209,8 @@ python3 scripts/take_screenshots.py
 ```
 
 This requires no Plex server — all API calls are intercepted with mock data.
+The screenshot generator uses deterministic, generated mock poster/thumbnail images
+so poster layouts are visible without shipping real copyrighted artwork.
 The `.github/workflows/screenshots.yml` CI workflow does this automatically
 for PRs that touch UI files (artifact upload) and after merge on `main`
 (auto-commit).
