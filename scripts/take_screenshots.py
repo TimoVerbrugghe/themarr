@@ -87,6 +87,7 @@ def _start_flask(port: int = 18080) -> subprocess.Popen:
         "MOVIES_PATH": "/movies",
         "DEFAULT_THEME": "dark",
         "FLASK_DEBUG": "0",
+        "PORT": str(port),
     })
     proc = subprocess.Popen(
         [sys.executable, str(REPO_ROOT / "web_app.py")],
