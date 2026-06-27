@@ -7,8 +7,7 @@ This repository is prepared for AI coding agents. Use this guide for safe, consi
 - **Language**: Python 3.11
 - **Runtime**: Docker / Docker Compose
 - **Web UI entry point**: `web_app.py` (Flask, port 8080)
-- **CLI entry point**: `plex_theme_downloader.py`
-- **Goal**: Manage Plex theme music (`theme.mp3`) for TV shows and movies via Web UI or batch CLI
+- **Goal**: Manage Plex theme music (`theme.mp3`) for TV shows and movies via Web UI
 
 ## Setup and Validation Commands
 
@@ -16,13 +15,12 @@ Run from repo root:
 
 ```bash
 # Syntax check
-python3 -m py_compile plex_theme_downloader.py
 python3 -m py_compile web_app.py
 
 # Validate compose file
 docker compose config
 
-# Run tests (78 tests, must all pass)
+# Run tests (must all pass)
 python3 -m pytest tests/ -v
 
 # Build container image
@@ -35,12 +33,9 @@ Primary environment variables are defined in `.env.example`:
 
 - `PLEX_URL`, `PLEX_TOKEN` — Plex server credentials
 - `TV_SHOWS_HOST_PATH`, `MOVIES_HOST_PATH` — host paths mounted into container
-- `TV_SHOWS_PATH` / `TV_PATH` — container path for TV shows (default `/tv`)
-- `MOVIES_PATH` — container path for movies (default `/movies`)
-- `WEB_PORT` — web UI port (default `8080`)
 - `FLASK_DEBUG` — Flask debug mode
 - `DEFAULT_THEME` — default UI theme: `dark` or `light`
-- `VERBOSE`, `VERBOSE_MATCHING`, `OVERWRITE` — CLI flags
+- `DEFAULT_VIEW` — default library view: `list` or `grid`
 - `PUSHOVER_APP_TOKEN`, `PUSHOVER_USER_KEY` — optional Pushover notifications
 - `WEBHOOK_USERNAME`, `WEBHOOK_PASSWORD` — optional webhook Basic Auth
 - `PLEX_RETRY_ATTEMPTS`, `PLEX_RETRY_DELAY` — webhook retry tuning
@@ -50,12 +45,10 @@ Primary environment variables are defined in `.env.example`:
 | File | Purpose |
 |---|---|
 | `web_app.py` | Flask REST API + Web UI backend |
-| `plex_theme_downloader.py` | CLI batch downloader (TV + movies) |
 | `templates/index.html` | Single-page web UI shell |
 | `static/css/style.css` | Sonarr-inspired dark/light theme CSS |
 | `static/js/app.js` | Frontend JS (library browser, modals, multi-select, settings) |
 | `tests/test_web_app.py` | Web app unit tests |
-| `tests/test_plex_theme_downloader.py` | CLI unit tests |
 | `.github/workflows/docker-publish.yml` | CI: build + push to ghcr.io on main push |
 | `.github/workflows/screenshots.yml` | CI: screenshot artifacts on UI PRs; auto-update on main |
 | `.github/workflows/sanitize-screenshot-changes.yml` | CI: auto-removes direct screenshots/ changes from branches/PRs |

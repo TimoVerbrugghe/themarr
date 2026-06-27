@@ -5,7 +5,6 @@ services:
     environment:
       PLEX_URL: ${PLEX_URL}
       PLEX_TOKEN: ${PLEX_TOKEN}
-      VERBOSE: ${VERBOSE:-false}
       FLASK_DEBUG: ${FLASK_DEBUG:-false}
       DEFAULT_THEME: ${DEFAULT_THEME:-dark}
       DEFAULT_VIEW: ${DEFAULT_VIEW:-list}

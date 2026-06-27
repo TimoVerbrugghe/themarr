@@ -3,9 +3,8 @@
 ## What this repo does
 
 Themarr manages Plex theme music (`theme.mp3`) for TV shows and movies.
-It includes a Flask-based **web UI** (`web_app.py`), a CLI batch downloader
-(`plex_theme_downloader.py`), Sonarr/Radarr webhook support, and Pushover
-notifications.
+It includes a Flask-based **web UI** (`web_app.py`) with bulk download support,
+Sonarr/Radarr webhook integration, and Pushover notifications.
 
 ## Local validation before finishing a task
 
@@ -13,10 +12,9 @@ Always run **all** of these before pushing changes:
 
 ```bash
 # Syntax check
-python3 -m py_compile plex_theme_downloader.py
 python3 -m py_compile web_app.py
 
-# Unit tests (78 tests, must all pass)
+# Unit tests (must all pass)
 python3 -m pytest tests/ -v
 
 # Validate Docker Compose config
