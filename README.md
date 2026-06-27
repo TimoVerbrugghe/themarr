@@ -1,5 +1,9 @@
 # Themarr
 
+<p align="center">
+  <img src="static/logo-themarr.svg" alt="Themarr logo" width="420">
+</p>
+
 Themarr manages Plex theme music for TV shows and movies. It includes a Flask-based web UI, a CLI batch downloader, Sonarr/Radarr webhook integration, and Pushover notifications.
 
 ## Screenshots

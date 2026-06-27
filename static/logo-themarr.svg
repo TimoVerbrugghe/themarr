@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 180" role="img" aria-labelledby="logoTitle logoDesc">
+  <title id="logoTitle">Themarr logo</title>
+  <desc id="logoDesc">Themarr wordmark with the exact favicon mark as emblem.</desc>
+
+  <defs>
+    <linearGradient id="tmRing" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00E3FF"/>
+      <stop offset="100%" stop-color="#00B5FF"/>
+    </linearGradient>
+    <linearGradient id="tmText" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#EAF0F7"/>
+      <stop offset="100%" stop-color="#D6DFEA"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Emblem: exact favicon mark, scaled up -->
+  <g transform="translate(10 10) scale(2.5)">
+    <circle cx="32" cy="32" r="28" fill="#2B3140"/>
+    <circle cx="32" cy="32" r="28" fill="none" stroke="url(#tmRing)" stroke-width="4"/>
+    <circle cx="32" cy="32" r="18" fill="#171C27"/>
+    <path d="M20 23h24v5h-8v17a6.5 6.5 0 1 1-5-6V28h-11z" fill="#EDF4FF"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="190" y="112" font-size="76" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif" letter-spacing="1.2" fill="url(#tmText)">them<tspan fill="#00CFFF">arr</tspan></text>
+</svg>

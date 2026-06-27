@@ -147,15 +147,12 @@ a:hover { color: var(--accent-hover); }
 .logo {
   display: flex;
   align-items: center;
-  gap: 8px;
   text-decoration: none;
 }
-.logo-icon { font-size: 20px; }
-.logo-text {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--accent);
-  letter-spacing: 0.5px;
+.logo-image {
+  display: block;
+  height: 30px;
+  width: auto;
 }
 .header-right {
   display: flex;
@@ -317,7 +314,16 @@ a:hover { color: var(--accent-hover); }
   text-align: center;
   gap: 12px;
 }
-.welcome-icon { font-size: 60px; }
+.welcome-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.welcome-logo {
+  display: block;
+  width: min(380px, 70vw);
+  height: auto;
+}
 .welcome-screen h2 { color: var(--text-muted); font-weight: 500; }
 .welcome-screen p { font-size: 14px; max-width: 400px; }
 
