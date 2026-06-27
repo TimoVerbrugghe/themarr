@@ -685,6 +685,11 @@ def download_from_youtube(rating_key):
         send_pushover_notification('Theme Downloaded', f'{item.title} theme downloaded from YouTube')
         _invalidate_library_cache()
         return jsonify({'success': True, 'path': str(theme_path)})
+    except yt_dlp.utils.DownloadError as exc:
+        # Strip the leading "ERROR: " prefix yt-dlp adds so the toast reads cleanly
+        msg = str(exc).removeprefix('ERROR: ').strip()
+        logger.error('Failed YouTube download for %s: %s', rating_key, exc)
+        return jsonify({'error': msg}), 500
     except Exception as exc:
         return error_response(f'Failed YouTube download for {rating_key}', exc=exc)
 
