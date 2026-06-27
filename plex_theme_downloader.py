@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Themarr - Plex Theme Downloader
-Downloads theme music from Plex for TV shows and saves them as theme.mp3 files
-in the corresponding TV show folders.
+Downloads theme music from Plex for TV shows and movies, saving them as
+theme.mp3 files in the corresponding media folders.
 """
 
 import os
@@ -33,7 +33,7 @@ class PlexThemeDownloader:
             raise
     
     def get_tv_library(self):
-        """Get the TV Shows library."""
+        """Get the first TV Shows library."""
         try:
             for section in self.plex.library.sections():
                 if section.type == 'show':
@@ -44,24 +44,42 @@ class PlexThemeDownloader:
         except Exception as e:
             logger.error(f"Failed to get TV library: {e}")
             return None
+
+    def get_movie_library(self):
+        """Get the first Movies library."""
+        try:
+            for section in self.plex.library.sections():
+                if section.type == 'movie':
+                    logger.info(f"Found Movies library: {section.title}")
+                    return section
+            logger.info("No Movies library found")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get Movies library: {e}")
+            return None
     
     def get_show_path(self, show) -> Optional[str]:
         """Get the show folder path directly from Plex metadata.
         
-        Show objects in plexapi have a .locations property that gives the exact
-        filesystem paths where the show is stored.
+        Show and Movie objects in plexapi have a .locations property that gives
+        the exact filesystem paths where the media is stored. For movies, the
+        location points to the video file; we return its parent directory.
         
         Args:
-            show: PlexAPI Show object
+            show: PlexAPI Show or Movie object
             
         Returns:
-            Full path to show folder, or None if not available
+            Full path to the media folder, or None if not available
         """
         try:
             # Use plexapi's locations property - this gives us direct filesystem paths
             if hasattr(show, 'locations') and show.locations:
-                # locations is a list; return the first one
-                show_path = show.locations[0]
+                plex_path = show.locations[0]
+                if getattr(show, 'type', None) == 'movie':
+                    # Movie location points to the video file; use parent directory
+                    show_path = str(Path(plex_path).parent)
+                else:
+                    show_path = plex_path
                 logger.debug(f"Got path for {show.title}: {show_path}")
                 return show_path
             else:
@@ -250,7 +268,8 @@ def main():
     """Main entry point."""
     plex_url = os.getenv('PLEX_URL', 'http://plex.local.timo.be:32400')
     plex_token = os.getenv('PLEX_TOKEN')
-    tv_path = os.getenv('TV_SHOWS_PATH', '/tv')
+    tv_path = os.getenv('TV_SHOWS_PATH') or os.getenv('TV_PATH', '/tv')
+    movies_path = os.getenv('MOVIES_PATH', '/movies')
     verbose = os.getenv('VERBOSE', 'false').lower() == 'true'
     verbose_matching = os.getenv('VERBOSE_MATCHING', 'false').lower() == 'true'
     overwrite = os.getenv('OVERWRITE', 'false').lower() == 'true'
@@ -260,106 +279,105 @@ def main():
         sys.exit(1)
     
     if not Path(tv_path).exists():
-        logger.error(f"TV_SHOWS_PATH does not exist: {tv_path}")
+        logger.error(f"TV shows path does not exist: {tv_path}")
         sys.exit(1)
     
     logger.info(f"Plex URL: {plex_url}")
     logger.info(f"TV Shows Path: {tv_path}")
+    logger.info(f"Movies Path: {movies_path}")
     if overwrite:
         logger.info("⚠️  OVERWRITE MODE ENABLED - Will replace existing theme.mp3 files")
     
     # Initialize Plex client
     plex_client = PlexThemeDownloader(plex_url, plex_token)
     
-    # Get TV library
+    all_matches = {'matched': [], 'already_have_theme': [], 'no_theme_in_plex': [], 'no_local_match': []}
+
+    # ── TV Shows ──────────────────────────────────────────────────────────────
     tv_library = plex_client.get_tv_library()
-    if not tv_library:
-        sys.exit(1)
+    if tv_library:
+        all_shows = tv_library.all()
+        logger.info(f"Found {len(all_shows)} shows in Plex TV library")
+        shows_with_themes = [s for s in all_shows if s.theme]
+        logger.info(f"  - With themes: {len(shows_with_themes)}")
+        logger.info(f"  - Without themes: {len(all_shows) - len(shows_with_themes)}")
+
+        scanner = TVShowScanner(tv_path)
+        local_shows = scanner.scan_shows()
+        logger.info(f"Found {len(local_shows)} local TV folders")
+
+        tv_matches = match_shows(local_shows, all_shows, plex_client, verbose=verbose_matching, overwrite=overwrite)
+        for key in all_matches:
+            all_matches[key].extend(tv_matches[key])
+
+        _download_matched(plex_client, tv_matches['matched'])
+        _cleanup_empty_themes(Path(tv_path))
     
-    # Get all shows
-    all_shows = tv_library.all()
-    logger.info(f"Found {len(all_shows)} shows in Plex library")
-    
-    shows_with_themes = [s for s in all_shows if s.theme]
-    logger.info(f"  - With themes: {len(shows_with_themes)}")
-    logger.info(f"  - Without themes: {len(all_shows) - len(shows_with_themes)}")
-    
-    # Scan local folders
-    scanner = TVShowScanner(tv_path)
-    local_shows = scanner.scan_shows()
-    logger.info(f"Found {len(local_shows)} local folders")
-    
-    # Match shows (with overwrite flag)
-    matches = match_shows(local_shows, all_shows, plex_client, verbose=verbose_matching, overwrite=overwrite)
-    
-    # Print summary
-    print("\n" + "="*60)
-    print("MATCHING SUMMARY")
-    print("="*60)
-    print(f"Total Plex shows: {len(all_shows)}")
-    print(f"  - With themes: {len(shows_with_themes)}")
-    print(f"  - Without themes: {len(all_shows) - len(shows_with_themes)}")
-    print(f"Total local folders: {len(local_shows)}")
-    print()
-    print("Matching Results:")
-    print(f"  ✓ Matched (ready to download): {len(matches['matched'])}")
-    print(f"  ⊘ Skipped (already have theme): {len(matches['already_have_theme'])}")
-    print(f"  ⊘ Skipped (no theme in Plex): {len(matches['no_theme_in_plex'])}")
-    print(f"  ⊘ No local match found: {len(matches['no_local_match'])}")
-    print()
-    
-    # Print unmatched
-    if matches['no_local_match']:
-        print(f"Sample of {len(matches['no_local_match'])} unmatched Plex shows (with themes):")
-        for title in matches['no_local_match'][:10]:
-            print(f"    - {title}")
-        if len(matches['no_local_match']) > 10:
-            print(f"    ... and {len(matches['no_local_match']) - 10} more")
-    
-    # Print local folders status
-    print("\nLocal folders (first 20):")
-    matched_folders = {m['local_folder'].lower() for m in matches['matched']}
-    
-    for i, (folder_name, info) in enumerate(sorted(local_shows.items())):
-        if i >= 20:
-            print(f"    ... and {len(local_shows) - 20} more")
-            break
-        
-        has_match = folder_name.lower() in matched_folders or info['has_local_theme']
-        symbol = "✓" if has_match else "✗"
-        print(f"    {symbol} {folder_name}")
-    
-    print("="*60 + "\n")
-    
-    # Download themes
-    if matches['matched']:
-        logger.info(f"Matched {len(matches['matched'])} shows for theme download")
-        
-        downloaded = 0
-        for match in matches['matched']:
-            if plex_client.download_theme(match['show'], match['theme_path']):
-                downloaded += 1
-        
-        logger.info(f"Successfully downloaded {downloaded}/{len(matches['matched'])} themes")
+    # ── Movies ────────────────────────────────────────────────────────────────
+    movies_root = Path(movies_path)
+    if movies_root.exists():
+        movie_library = plex_client.get_movie_library()
+        if movie_library:
+            all_movies = movie_library.all()
+            logger.info(f"Found {len(all_movies)} movies in Plex Movies library")
+            movies_with_themes = [m for m in all_movies if m.theme]
+            logger.info(f"  - With themes: {len(movies_with_themes)}")
+            logger.info(f"  - Without themes: {len(all_movies) - len(movies_with_themes)}")
+
+            movie_scanner = TVShowScanner(str(movies_root))
+            local_movies = movie_scanner.scan_shows()
+            logger.info(f"Found {len(local_movies)} local movie folders")
+
+            movie_matches = match_shows(local_movies, all_movies, plex_client, verbose=verbose_matching, overwrite=overwrite)
+            for key in all_matches:
+                all_matches[key].extend(movie_matches[key])
+
+            _download_matched(plex_client, movie_matches['matched'])
+            _cleanup_empty_themes(movies_root)
     else:
+        logger.info(f"Movies path not found ({movies_path}), skipping movies")
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    print("\n" + "="*60)
+    print("SUMMARY")
+    print("="*60)
+    print(f"  ✓ Matched (downloaded): {len(all_matches['matched'])}")
+    print(f"  ⊘ Skipped (already have theme): {len(all_matches['already_have_theme'])}")
+    print(f"  ⊘ Skipped (no theme in Plex): {len(all_matches['no_theme_in_plex'])}")
+    print(f"  ⊘ No local match found: {len(all_matches['no_local_match'])}")
+    print("="*60 + "\n")
+
+    return all_matches
+
+
+def _download_matched(plex_client: 'PlexThemeDownloader', matched: List) -> int:
+    """Download themes for all matched items; returns count of successes."""
+    if not matched:
         logger.info("No new themes to download")
-    
-    # Clean up empty (0KB) theme files
-    logger.info("Cleaning up empty theme files...")
-    empty_themes = []
-    for theme_file in Path(tv_path).glob('*/theme.mp3'):
+        return 0
+    logger.info(f"Downloading {len(matched)} theme(s)…")
+    downloaded = 0
+    for match in matched:
+        if plex_client.download_theme(match['show'], match['theme_path']):
+            downloaded += 1
+    logger.info(f"Successfully downloaded {downloaded}/{len(matched)} themes")
+    return downloaded
+
+
+def _cleanup_empty_themes(root: Path) -> None:
+    """Remove zero-byte theme.mp3 files under *root*."""
+    logger.info(f"Cleaning up empty theme files in {root}…")
+    removed = []
+    for theme_file in root.glob('*/theme.mp3'):
         if theme_file.stat().st_size == 0:
             try:
                 theme_file.unlink()
-                empty_themes.append(theme_file.parent.name)
+                removed.append(theme_file.parent.name)
                 logger.info(f"Removed empty theme: {theme_file.parent.name}")
             except Exception as e:
                 logger.error(f"Failed to remove {theme_file}: {e}")
-    
-    if empty_themes:
-        logger.info(f"Removed {len(empty_themes)} empty theme files")
-    
-    return matches
+    if removed:
+        logger.info(f"Removed {len(removed)} empty theme file(s)")
 
 
 if __name__ == '__main__':

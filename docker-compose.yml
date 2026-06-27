@@ -5,19 +5,16 @@ services:
     environment:
       PLEX_URL: ${PLEX_URL}
       PLEX_TOKEN: ${PLEX_TOKEN}
-      TV_SHOWS_PATH: /tv
-      PLEX_LIBRARY_NAME: ${PLEX_LIBRARY_NAME:-TV Shows}
+      TV_SHOWS_PATH: ${TV_SHOWS_PATH:-/tv}
+      TV_PATH: ${TV_PATH:-${TV_SHOWS_PATH:-/tv}}
+      MOVIES_PATH: ${MOVIES_PATH:-/movies}
       VERBOSE: ${VERBOSE:-false}
       VERBOSE_MATCHING: ${VERBOSE_MATCHING:-false}
       OVERWRITE: ${OVERWRITE:-false}
+      FLASK_DEBUG: ${FLASK_DEBUG:-false}
     volumes:
-      - tv-shows:/tv
-    restart: "no"
-
-volumes:
-  tv-shows:
-    driver: local
-    driver_opts:
-      type: nfs
-      o: ${NFS_MOUNT_OPTIONS:-addr=10.0.0.0,vers=4,soft,timeo=180,retrans=2,noresvport}
-      device: "${NFS_DEVICE:-:/path/to/tvshows}"
+      - ${TV_SHOWS_HOST_PATH:-/mnt/tv}:/tv
+      - ${MOVIES_HOST_PATH:-/mnt/movies}:/movies
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    restart: unless-stopped

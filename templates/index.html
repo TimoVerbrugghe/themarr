@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Themarr</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-inner">
+      <a class="logo" href="/">
+        <span class="logo-icon">🎵</span>
+        <span class="logo-text">Themarr</span>
+      </a>
+      <div class="header-right">
+        <div id="plex-status" class="plex-status plex-status--unknown">
+          <span class="status-dot"></span>
+          <span id="plex-status-text">Connecting…</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Layout -->
+  <div class="app-layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-heading">Libraries</div>
+      <nav id="library-nav" class="library-nav">
+        <div class="sidebar-loading">Loading libraries…</div>
+      </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content" id="main-content">
+      <!-- Welcome screen -->
+      <div id="welcome-screen" class="welcome-screen">
+        <div class="welcome-icon">🎵</div>
+        <h2>Welcome to Themarr</h2>
+        <p>Select a library from the sidebar to manage theme music for your media.</p>
+      </div>
+
+      <!-- Library view -->
+      <div id="library-view" class="library-view hidden">
+        <div class="library-toolbar">
+          <div class="library-info">
+            <h1 id="library-title" class="library-title"></h1>
+            <div id="library-stats" class="library-stats"></div>
+          </div>
+          <div class="toolbar-controls">
+            <input type="text" id="search-input" class="search-input" placeholder="Search…" aria-label="Search media items" oninput="filterItems()">
+            <div class="filter-buttons">
+              <button class="btn btn-sm btn-secondary active" id="filter-all" onclick="setFilter('all')">All</button>
+              <button class="btn btn-sm btn-secondary" id="filter-has-theme" onclick="setFilter('has_theme')">Has Theme</button>
+              <button class="btn btn-sm btn-secondary" id="filter-no-theme" onclick="setFilter('no_theme')">No Theme</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="items-grid" class="items-grid"></div>
+        <div id="items-loading" class="items-loading hidden">
+          <div class="spinner"></div>
+          <span>Loading items…</span>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ============================================================
+       MODALS
+       ============================================================ -->
+
+  <!-- Download from Plex modal -->
+  <div id="modal-download" class="modal-overlay hidden" onclick="closeModal('modal-download', event)">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Download Theme from Plex</h3>
+        <button class="modal-close" onclick="closeModal('modal-download')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="modal-download-message"></p>
+        <div id="modal-download-preview" class="modal-preview hidden">
+          <p class="preview-label">Preview Plex theme:</p>
+          <audio id="preview-audio" controls class="audio-player"></audio>
+        </div>
+        <div id="modal-download-overwrite" class="overwrite-warning hidden">
+          <div class="warning-box">
+            <span>⚠️</span>
+            <span>A theme already exists. Check "Overwrite" to replace it.</span>
+          </div>
+          <label class="checkbox-label">
+            <input type="checkbox" id="download-overwrite-check">
+            Overwrite existing theme
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('modal-download')">Cancel</button>
+        <button id="btn-preview-plex" class="btn btn-secondary" onclick="previewPlexTheme()">Preview</button>
+        <button id="btn-confirm-download" class="btn btn-primary" onclick="confirmDownload()">Download</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upload modal -->
+  <div id="modal-upload" class="modal-overlay hidden" onclick="closeModal('modal-upload', event)">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Upload Theme File</h3>
+        <button class="modal-close" onclick="closeModal('modal-upload')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>Upload an MP3 file to use as the theme for <strong id="upload-item-title"></strong>.</p>
+        <div class="file-upload-area" id="file-drop-area">
+          <input type="file" id="upload-file-input" accept="audio/*,.mp3" onchange="handleFileSelect(event)">
+          <div class="file-upload-label" onclick="document.getElementById('upload-file-input').click()">
+            <span class="upload-icon">📁</span>
+            <span>Click to select or drag &amp; drop an MP3 file</span>
+          </div>
+          <div id="selected-file-name" class="selected-file hidden"></div>
+        </div>
+        <div id="modal-upload-overwrite" class="overwrite-warning hidden">
+          <div class="warning-box">
+            <span>⚠️</span>
+            <span>A theme already exists. Check "Overwrite" to replace it.</span>
+          </div>
+          <label class="checkbox-label">
+            <input type="checkbox" id="upload-overwrite-check">
+            Overwrite existing theme
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('modal-upload')">Cancel</button>
+        <button class="btn btn-primary" onclick="confirmUpload()">Upload</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- YouTube modal -->
+  <div id="modal-youtube" class="modal-overlay hidden" onclick="closeModal('modal-youtube', event)">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Download from YouTube</h3>
+        <button class="modal-close" onclick="closeModal('modal-youtube')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>Enter a YouTube URL to download the audio and save it as the theme for <strong id="youtube-item-title"></strong>.</p>
+        <div class="form-group">
+          <label for="youtube-url-input">YouTube URL</label>
+          <input type="url" id="youtube-url-input" class="form-control" placeholder="https://www.youtube.com/watch?v=...">
+        </div>
+        <div id="modal-youtube-overwrite" class="overwrite-warning hidden">
+          <div class="warning-box">
+            <span>⚠️</span>
+            <span>A theme already exists. Check "Overwrite" to replace it.</span>
+          </div>
+          <label class="checkbox-label">
+            <input type="checkbox" id="youtube-overwrite-check">
+            Overwrite existing theme
+          </label>
+        </div>
+        <div id="youtube-progress" class="progress-area hidden">
+          <div class="spinner"></div>
+          <span>Downloading and converting audio…</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('modal-youtube')">Cancel</button>
+        <button class="btn btn-primary" onclick="confirmYoutube()">Download</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete confirmation modal -->
+  <div id="modal-delete" class="modal-overlay hidden" onclick="closeModal('modal-delete', event)">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h3>Delete Theme</h3>
+        <button class="modal-close" onclick="closeModal('modal-delete')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>Are you sure you want to delete the theme for <strong id="delete-item-title"></strong>?</p>
+        <p class="text-muted">This action cannot be undone.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('modal-delete')">Cancel</button>
+        <button class="btn btn-danger" onclick="confirmDelete()">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast notifications -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
