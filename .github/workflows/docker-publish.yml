@@ -42,7 +42,7 @@ jobs:
       # On semver tag    → ghcr.io/timoverbrugghe/themarr:1.2.3 + :latest
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
