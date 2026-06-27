@@ -1,7 +1,7 @@
 requests==2.31.0
 plexapi==4.15.1
 Flask==3.0.3
-Werkzeug==3.0.3
+Werkzeug==3.1.8
 yt-dlp==2024.4.9
 pytest==8.1.1
 pytest-mock==3.14.0
