@@ -180,6 +180,6 @@ class TestMatchShows:
         mock_client = MagicMock()
         mock_client.get_show_path.return_value = '/plex/tv/My Show (2020)'
 
-        results = match_shows(local_shows, [plex_show], mock_client, overwrite=False)
+        results = match_shows(local_shows, [plex_show], mock_client)
         assert len(results['already_have_theme']) == 1
         assert len(results['matched']) == 0

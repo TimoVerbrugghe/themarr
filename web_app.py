@@ -79,38 +79,43 @@ def scan_local_theme_dirs(base_paths):
     return theme_dirs
 
 
-def resolve_existing_media_path(path_value, item_type):
-    """Return an existing Plex path when container mounts already match Plex paths."""
-    candidate = Path(path_value)
-    if not candidate.exists():
-        return None
-    if item_type == 'show':
-        return candidate if candidate.is_dir() else None
-    if item_type == 'movie':
-        if candidate.is_file():
-            return candidate.parent
-        return candidate if candidate.is_dir() else None
-    return None
+def get_section_base_paths(plex):
+    """Return the unique set of root directory paths for all show/movie sections.
+
+    Uses Plex's reported ``locations`` for each section so we don't need any
+    path-related environment variables — the caller must mount library paths at
+    the same container path as the Plex container.
+    """
+    paths = set()
+    try:
+        for section in plex.library.sections():
+            if section.type in ('show', 'movie'):
+                for loc in section.locations:
+                    paths.add(loc)
+    except Exception:
+        pass
+    return paths
 
 
 def get_item_local_path(item):
-    """Get the local filesystem path for a Plex library item."""
+    """Get the local filesystem path for a Plex library item.
+
+    Uses the path reported by Plex directly — this works when the container
+    mounts the same library paths at the same locations as the Plex container.
+    """
     if not hasattr(item, 'locations') or not item.locations:
         return None
 
-    plex_path = item.locations[0]
-    existing_path = resolve_existing_media_path(plex_path, item.type)
-    if existing_path is not None:
-        return existing_path
-
-    if item.type == 'show':
-        tv_path = os.getenv('TV_PATH') or os.getenv('TV_SHOWS_PATH', '/tv')
-        return Path(tv_path) / Path(plex_path).name
-    if item.type == 'movie':
-        movies_path = os.getenv('MOVIES_PATH', '/movies')
-        parent = Path(plex_path).parent
-        folder_name = parent.name if parent != Path(plex_path) else Path(plex_path).stem
-        return Path(movies_path) / folder_name
+    for loc in item.locations:
+        candidate = Path(loc)
+        if item.type == 'show':
+            if candidate.is_dir():
+                return candidate
+        elif item.type == 'movie':
+            if candidate.is_file():
+                return candidate.parent
+            if candidate.is_dir():
+                return candidate
 
     return None
 
@@ -329,9 +334,8 @@ def _build_library_items(section_id):
     """Fetch and return sorted item dicts for a Plex section (no caching)."""
     plex = get_plex()
     section = plex.library.sectionByID(section_id)
-    tv_path = os.getenv('TV_PATH') or os.getenv('TV_SHOWS_PATH', '/tv')
-    movies_path = os.getenv('MOVIES_PATH', '/movies')
-    theme_dirs = scan_local_theme_dirs([tv_path, movies_path])
+    base_paths = get_section_base_paths(plex)
+    theme_dirs = scan_local_theme_dirs(base_paths)
     items = section.all()
     result = [item_to_dict(item, theme_dirs) for item in items]
     result.sort(key=lambda item: item['title'].lower())
@@ -381,11 +385,17 @@ def index():
     Reads DEFAULT_THEME from the environment (``dark`` or ``light``) to set
     the initial colour scheme rendered into the page.  The user can override
     this in-browser; their choice is persisted in localStorage.
+
+    Reads DEFAULT_VIEW from the environment (``list`` or ``grid``) to set
+    the initial library view.  User preference is persisted in localStorage.
     """
     default_theme = os.getenv('DEFAULT_THEME', 'dark').strip().lower()
     if default_theme not in ('dark', 'light'):
         default_theme = 'dark'
-    return render_template('index.html', default_theme=default_theme)
+    default_view = os.getenv('DEFAULT_VIEW', 'list').strip().lower()
+    if default_view not in ('list', 'grid'):
+        default_view = 'list'
+    return render_template('index.html', default_theme=default_theme, default_view=default_view)
 
 
 @app.route('/api/status')
@@ -836,9 +846,8 @@ def settings_rescan():
     """Rescan all media library items and count local theme.mp3 files."""
     try:
         plex = get_plex()
-        tv_path = os.getenv('TV_PATH') or os.getenv('TV_SHOWS_PATH', '/tv')
-        movies_path = os.getenv('MOVIES_PATH', '/movies')
-        theme_dirs = scan_local_theme_dirs([tv_path, movies_path])
+        base_paths = get_section_base_paths(plex)
+        theme_dirs = scan_local_theme_dirs(base_paths)
         sections = plex.library.sections()
         total = 0
         with_theme = 0

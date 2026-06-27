@@ -550,6 +550,23 @@ a:hover { color: var(--accent-hover); }
 }
 .action-btn-play-inline:hover { background: var(--bg-hover); color: var(--text); }
 .action-btn-play-inline.playing { color: var(--text); background: var(--bg-active); border-color: var(--accent); }
+.action-btn-play-inline.loading {
+  color: transparent;
+  border-color: var(--border-strong);
+  cursor: wait;
+  position: relative;
+}
+.action-btn-play-inline.loading::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 10px; height: 10px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
 
 /* Full-width variant for poster/grid cards */
 .action-btn-play-inline.action-btn-play-wide {

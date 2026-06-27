@@ -39,8 +39,13 @@ def mock_plex():
         yield plex
 
 
-def make_mock_show(rating_key=1, title='Test Show', year=2020, has_theme=True, location='/plex/tv/Test Show (2020)'):
-    """Create a mock Plex show item."""
+def make_mock_show(rating_key=1, title='Test Show', year=2020, has_theme=True, location=None):
+    """Create a mock Plex show item.
+
+    If *location* is None the item will have no locations (path won't be
+    resolved by get_item_local_path, so has_local_theme will be False).
+    Pass a real filesystem path to test theme detection.
+    """
     show = MagicMock()
     show.ratingKey = rating_key
     show.title = title
@@ -48,12 +53,17 @@ def make_mock_show(rating_key=1, title='Test Show', year=2020, has_theme=True, l
     show.type = 'show'
     show.thumb = f'/library/metadata/{rating_key}/thumb'
     show.theme = f'/library/metadata/{rating_key}/theme/1' if has_theme else None
-    show.locations = [location]
+    show.locations = [location] if location else []
     return show
 
 
-def make_mock_movie(rating_key=2, title='Test Movie', year=2021, has_theme=True, location='/plex/movies/Test Movie (2021)/movie.mkv'):
-    """Create a mock Plex movie item."""
+def make_mock_movie(rating_key=2, title='Test Movie', year=2021, has_theme=True, location=None):
+    """Create a mock Plex movie item.
+
+    If *location* is None the item will have no locations (path won't be
+    resolved by get_item_local_path, so has_local_theme will be False).
+    Pass a real filesystem path (video file or folder) to test theme detection.
+    """
     movie = MagicMock()
     movie.ratingKey = rating_key
     movie.title = title
@@ -61,7 +71,7 @@ def make_mock_movie(rating_key=2, title='Test Movie', year=2021, has_theme=True,
     movie.type = 'movie'
     movie.thumb = f'/library/metadata/{rating_key}/thumb'
     movie.theme = f'/library/metadata/{rating_key}/theme/1' if has_theme else None
-    movie.locations = [location]
+    movie.locations = [location] if location else []
     return movie
 
 
@@ -128,9 +138,9 @@ class TestLibraryItems:
         section = MagicMock()
         section.all.return_value = [show]
         mock_plex.library.sectionByID.return_value = section
+        mock_plex.library.sections.return_value = []
 
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.get('/api/libraries/1/items')
+        resp = client.get('/api/libraries/1/items')
         assert resp.status_code == 200
         data = resp.get_json()
         assert len(data) == 1
@@ -144,9 +154,9 @@ class TestLibraryItems:
         section = MagicMock()
         section.all.return_value = [movie]
         mock_plex.library.sectionByID.return_value = section
+        mock_plex.library.sections.return_value = []
 
-        with patch.dict(os.environ, {'MOVIES_PATH': str(tmp_path)}):
-            resp = client.get('/api/libraries/2/items')
+        resp = client.get('/api/libraries/2/items')
         assert resp.status_code == 200
         data = resp.get_json()
         assert len(data) == 1
@@ -154,41 +164,47 @@ class TestLibraryItems:
         assert data[0]['type'] == 'movie'
 
     def test_items_with_existing_theme(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
         show_dir = tmp_path / 'Test Show (2020)'
         show_dir.mkdir()
         theme_file = show_dir / 'theme.mp3'
         theme_file.write_bytes(b'\xff\xfb' * 100)
 
+        show = make_mock_show(location=str(show_dir))
         section = MagicMock()
         section.all.return_value = [show]
         mock_plex.library.sectionByID.return_value = section
+        mock_plex.library.sections.return_value = [
+            MagicMock(type='show', locations=[str(tmp_path)])
+        ]
 
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.get('/api/libraries/1/items')
+        resp = client.get('/api/libraries/1/items')
         data = resp.get_json()
         assert data[0]['has_local_theme'] is True
         assert data[0]['theme_size'] > 0
 
 
 class TestGetItemLocalPath:
-    def test_show_path(self):
+    def test_show_path(self, tmp_path):
         from web_app import get_item_local_path
+        show_dir = tmp_path / 'My Show (2020)'
+        show_dir.mkdir()
         show = MagicMock()
         show.type = 'show'
-        show.locations = ['/plex/tv/My Show (2020)']
-        with patch.dict(os.environ, {'TV_PATH': '/tv'}):
-            result = get_item_local_path(show)
-        assert str(result) == '/tv/My Show (2020)'
+        show.locations = [str(show_dir)]
+        result = get_item_local_path(show)
+        assert result == show_dir
 
-    def test_movie_path(self):
+    def test_movie_path(self, tmp_path):
         from web_app import get_item_local_path
+        movie_dir = tmp_path / 'My Movie (2021)'
+        movie_dir.mkdir()
+        movie_file = movie_dir / 'movie.mkv'
+        movie_file.write_bytes(b'fake')
         movie = MagicMock()
         movie.type = 'movie'
-        movie.locations = ['/plex/movies/My Movie (2021)/movie.mkv']
-        with patch.dict(os.environ, {'MOVIES_PATH': '/movies'}):
-            result = get_item_local_path(movie)
-        assert str(result) == '/movies/My Movie (2021)'
+        movie.locations = [str(movie_file)]
+        result = get_item_local_path(movie)
+        assert result == movie_dir
 
     def test_no_locations(self):
         from web_app import get_item_local_path
@@ -201,7 +217,9 @@ class TestGetItemLocalPath:
 
 class TestThemeDownload:
     def test_download_theme_success(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
+        show_dir = tmp_path / 'Test Show (2020)'
+        show_dir.mkdir()
+        show = make_mock_show(location=str(show_dir))
         mock_plex.fetchItem.return_value = show
         mock_plex.url.return_value = 'http://plex/theme.mp3'
 
@@ -209,13 +227,9 @@ class TestThemeDownload:
         mock_response.iter_content.return_value = [b'fake_mp3_data']
         mock_plex._session.get.return_value = mock_response
 
-        show_dir = tmp_path / 'Test Show (2020)'
-        show_dir.mkdir()
-
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.post('/api/items/1/theme/download',
-                               json={'overwrite': False},
-                               content_type='application/json')
+        resp = client.post('/api/items/1/theme/download',
+                           json={'overwrite': False},
+                           content_type='application/json')
         assert resp.status_code == 200
         data = resp.get_json()
         assert data['success'] is True
@@ -224,26 +238,26 @@ class TestThemeDownload:
         show = make_mock_show(has_theme=False)
         mock_plex.fetchItem.return_value = show
 
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.post('/api/items/1/theme/download', json={})
+        resp = client.post('/api/items/1/theme/download', json={})
         assert resp.status_code == 404
 
     def test_download_theme_already_exists(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
-        mock_plex.fetchItem.return_value = show
-
         show_dir = tmp_path / 'Test Show (2020)'
         show_dir.mkdir()
         (show_dir / 'theme.mp3').write_bytes(b'existing_theme')
+        show = make_mock_show(location=str(show_dir))
+        mock_plex.fetchItem.return_value = show
 
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.post('/api/items/1/theme/download', json={'overwrite': False})
+        resp = client.post('/api/items/1/theme/download', json={'overwrite': False})
         assert resp.status_code == 409
         data = resp.get_json()
         assert data['exists'] is True
 
     def test_download_theme_overwrite(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
+        show_dir = tmp_path / 'Test Show (2020)'
+        show_dir.mkdir()
+        (show_dir / 'theme.mp3').write_bytes(b'old_theme')
+        show = make_mock_show(location=str(show_dir))
         mock_plex.fetchItem.return_value = show
         mock_plex.url.return_value = 'http://plex/theme.mp3'
 
@@ -251,27 +265,20 @@ class TestThemeDownload:
         mock_response.iter_content.return_value = [b'new_theme_data']
         mock_plex._session.get.return_value = mock_response
 
-        show_dir = tmp_path / 'Test Show (2020)'
-        show_dir.mkdir()
-        (show_dir / 'theme.mp3').write_bytes(b'old_theme')
-
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.post('/api/items/1/theme/download', json={'overwrite': True})
+        resp = client.post('/api/items/1/theme/download', json={'overwrite': True})
         assert resp.status_code == 200
 
 
 class TestThemeUpload:
     def test_upload_theme(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
-        mock_plex.fetchItem.return_value = show
-
         show_dir = tmp_path / 'Test Show (2020)'
         show_dir.mkdir()
+        show = make_mock_show(location=str(show_dir))
+        mock_plex.fetchItem.return_value = show
 
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.post('/api/items/1/theme/upload',
-                               data={'overwrite': 'false',
-                                     'file': (io.BytesIO(b'ID3fake_mp3'), 'theme.mp3', 'audio/mpeg')})
+        resp = client.post('/api/items/1/theme/upload',
+                           data={'overwrite': 'false',
+                                 'file': (io.BytesIO(b'ID3fake_mp3'), 'theme.mp3', 'audio/mpeg')})
         assert resp.status_code == 200
         data = resp.get_json()
         assert data['success'] is True
@@ -281,32 +288,28 @@ class TestThemeUpload:
         assert resp.status_code == 400
 
     def test_upload_overwrite_rejected(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
-        mock_plex.fetchItem.return_value = show
-
         show_dir = tmp_path / 'Test Show (2020)'
         show_dir.mkdir()
         (show_dir / 'theme.mp3').write_bytes(b'existing_theme')
+        show = make_mock_show(location=str(show_dir))
+        mock_plex.fetchItem.return_value = show
 
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.post('/api/items/1/theme/upload',
-                               data={'overwrite': 'false',
-                                     'file': (io.BytesIO(b'ID3fake_mp3'), 'theme.mp3', 'audio/mpeg')})
+        resp = client.post('/api/items/1/theme/upload',
+                           data={'overwrite': 'false',
+                                 'file': (io.BytesIO(b'ID3fake_mp3'), 'theme.mp3', 'audio/mpeg')})
         assert resp.status_code == 409
 
 
 
     def test_upload_rejects_non_mp3(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
-        mock_plex.fetchItem.return_value = show
-
         show_dir = tmp_path / 'Test Show (2020)'
         show_dir.mkdir()
+        show = make_mock_show(location=str(show_dir))
+        mock_plex.fetchItem.return_value = show
 
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.post('/api/items/1/theme/upload',
-                               data={'overwrite': 'false',
-                                     'file': (io.BytesIO(b'not_audio'), 'theme.wav', 'audio/wav')})
+        resp = client.post('/api/items/1/theme/upload',
+                           data={'overwrite': 'false',
+                                 'file': (io.BytesIO(b'not_audio'), 'theme.wav', 'audio/wav')})
         assert resp.status_code == 400
 
 class TestThemeYoutube:
@@ -321,32 +324,28 @@ class TestThemeYoutube:
         assert resp.status_code == 400
 
     def test_youtube_already_exists(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
-        mock_plex.fetchItem.return_value = show
-
         show_dir = tmp_path / 'Test Show (2020)'
         show_dir.mkdir()
         (show_dir / 'theme.mp3').write_bytes(b'existing')
+        show = make_mock_show(location=str(show_dir))
+        mock_plex.fetchItem.return_value = show
 
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.post('/api/items/1/theme/youtube',
-                               json={'url': 'https://youtube.com/watch?v=test', 'overwrite': False})
+        resp = client.post('/api/items/1/theme/youtube',
+                           json={'url': 'https://youtube.com/watch?v=test', 'overwrite': False})
         assert resp.status_code == 409
 
     def test_youtube_download(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
-        mock_plex.fetchItem.return_value = show
-
         show_dir = tmp_path / 'Test Show (2020)'
         show_dir.mkdir()
+        show = make_mock_show(location=str(show_dir))
+        mock_plex.fetchItem.return_value = show
 
         fake_tmpdir = tmp_path / 'ytdl_tmp'
         fake_tmpdir.mkdir()
         (fake_tmpdir / 'theme.mp3').write_bytes(b'youtube_audio')
 
         with patch('web_app.yt_dlp') as mock_ytdlp, \
-             patch('tempfile.TemporaryDirectory') as mock_tmpdir, \
-             patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
+             patch('tempfile.TemporaryDirectory') as mock_tmpdir:
             mock_tmpdir.return_value.__enter__ = lambda s: str(fake_tmpdir)
             mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
             mock_ydl = MagicMock()
@@ -360,52 +359,44 @@ class TestThemeYoutube:
 
 class TestThemeDelete:
     def test_delete_theme(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
-        mock_plex.fetchItem.return_value = show
-
         show_dir = tmp_path / 'Test Show (2020)'
         show_dir.mkdir()
         (show_dir / 'theme.mp3').write_bytes(b'theme_data')
+        show = make_mock_show(location=str(show_dir))
+        mock_plex.fetchItem.return_value = show
 
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.delete('/api/items/1/theme')
+        resp = client.delete('/api/items/1/theme')
         assert resp.status_code == 200
         assert not (show_dir / 'theme.mp3').exists()
 
     def test_delete_nonexistent_theme(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
-        mock_plex.fetchItem.return_value = show
-
         show_dir = tmp_path / 'Test Show (2020)'
         show_dir.mkdir()
+        show = make_mock_show(location=str(show_dir))
+        mock_plex.fetchItem.return_value = show
 
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.delete('/api/items/1/theme')
+        resp = client.delete('/api/items/1/theme')
         assert resp.status_code == 404
 
 
 class TestGetTheme:
     def test_get_theme_file(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
-        mock_plex.fetchItem.return_value = show
-
         show_dir = tmp_path / 'Test Show (2020)'
         show_dir.mkdir()
         (show_dir / 'theme.mp3').write_bytes(b'\xff\xfb' * 100)
+        show = make_mock_show(location=str(show_dir))
+        mock_plex.fetchItem.return_value = show
 
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.get('/api/items/1/theme')
+        resp = client.get('/api/items/1/theme')
         assert resp.status_code == 200
 
     def test_get_theme_not_found(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
-        mock_plex.fetchItem.return_value = show
-
         show_dir = tmp_path / 'Test Show (2020)'
         show_dir.mkdir()
+        show = make_mock_show(location=str(show_dir))
+        mock_plex.fetchItem.return_value = show
 
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.get('/api/items/1/theme')
+        resp = client.get('/api/items/1/theme')
         assert resp.status_code == 404
 
 
@@ -425,19 +416,17 @@ class TestIndexPage:
 
 class TestBulkDownload:
     def test_bulk_download_success(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
+        show_dir = tmp_path / 'Test Show (2020)'
+        show_dir.mkdir()
+        show = make_mock_show(location=str(show_dir))
         mock_plex.fetchItem.return_value = show
         mock_plex.url.return_value = 'http://plex/theme.mp3'
         mock_resp = MagicMock()
         mock_resp.iter_content.return_value = [b'audio_data']
         mock_plex._session.get.return_value = mock_resp
 
-        show_dir = tmp_path / 'Test Show (2020)'
-        show_dir.mkdir()
-
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.post('/api/bulk/theme/download',
-                               json={'ratingKeys': [1], 'overwrite': False})
+        resp = client.post('/api/bulk/theme/download',
+                           json={'ratingKeys': [1], 'overwrite': False})
         assert resp.status_code == 200
         data = resp.get_json()
         assert len(data['success']) == 1
@@ -457,16 +446,14 @@ class TestBulkDownload:
         assert resp.status_code == 400
 
     def test_bulk_download_skips_existing(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
-        mock_plex.fetchItem.return_value = show
-
         show_dir = tmp_path / 'Test Show (2020)'
         show_dir.mkdir()
         (show_dir / 'theme.mp3').write_bytes(b'existing')
+        show = make_mock_show(location=str(show_dir))
+        mock_plex.fetchItem.return_value = show
 
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.post('/api/bulk/theme/download',
-                               json={'ratingKeys': [1], 'overwrite': False})
+        resp = client.post('/api/bulk/theme/download',
+                           json={'ratingKeys': [1], 'overwrite': False})
         data = resp.get_json()
         assert len(data['skipped']) == 1
 
@@ -474,27 +461,24 @@ class TestBulkDownload:
         show = make_mock_show(has_theme=False)
         mock_plex.fetchItem.return_value = show
 
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.post('/api/bulk/theme/download',
-                               json={'ratingKeys': [1], 'overwrite': False})
+        resp = client.post('/api/bulk/theme/download',
+                           json={'ratingKeys': [1], 'overwrite': False})
         data = resp.get_json()
         assert len(data['no_theme']) == 1
 
     def test_bulk_download_overwrite(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
+        show_dir = tmp_path / 'Test Show (2020)'
+        show_dir.mkdir()
+        (show_dir / 'theme.mp3').write_bytes(b'old')
+        show = make_mock_show(location=str(show_dir))
         mock_plex.fetchItem.return_value = show
         mock_plex.url.return_value = 'http://plex/theme.mp3'
         mock_resp = MagicMock()
         mock_resp.iter_content.return_value = [b'new_audio']
         mock_plex._session.get.return_value = mock_resp
 
-        show_dir = tmp_path / 'Test Show (2020)'
-        show_dir.mkdir()
-        (show_dir / 'theme.mp3').write_bytes(b'old')
-
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.post('/api/bulk/theme/download',
-                               json={'ratingKeys': [1], 'overwrite': True})
+        resp = client.post('/api/bulk/theme/download',
+                           json={'ratingKeys': [1], 'overwrite': True})
         data = resp.get_json()
         assert len(data['success']) == 1
 
@@ -635,18 +619,16 @@ class TestPushoverNotification:
             send_pushover_notification('Title', 'Body text')
 
     def test_pushover_called_on_download(self, client, mock_plex, tmp_path):
-        show = make_mock_show(location='/plex/tv/Test Show (2020)')
+        show_dir = tmp_path / 'Test Show (2020)'
+        show_dir.mkdir()
+        show = make_mock_show(location=str(show_dir))
         mock_plex.fetchItem.return_value = show
         mock_plex.url.return_value = 'http://plex/theme.mp3'
         mock_resp = MagicMock()
         mock_resp.iter_content.return_value = [b'mp3data']
         mock_plex._session.get.return_value = mock_resp
 
-        show_dir = tmp_path / 'Test Show (2020)'
-        show_dir.mkdir()
-
-        with patch('web_app.send_pushover_notification') as mock_notif, \
-             patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
+        with patch('web_app.send_pushover_notification') as mock_notif:
             resp = client.post('/api/items/1/theme/download', json={'overwrite': False})
         assert resp.status_code == 200
         mock_notif.assert_called_once()
@@ -764,22 +746,23 @@ class TestSettingsTestPushover:
 
 class TestSettingsRescan:
     def test_rescan_counts_themes(self, client, mock_plex, tmp_path):
-        show1 = make_mock_show(rating_key=1, title='Show A', location='/plex/tv/Show A')
-        show2 = make_mock_show(rating_key=2, title='Show B', location='/plex/tv/Show B')
-
         show_a_dir = tmp_path / 'Show A'
         show_a_dir.mkdir()
         (show_a_dir / 'theme.mp3').write_bytes(b'\xff\xfb' * 100)
 
-        (tmp_path / 'Show B').mkdir()  # no theme
+        show_b_dir = tmp_path / 'Show B'
+        show_b_dir.mkdir()  # no theme
+
+        show1 = make_mock_show(rating_key=1, title='Show A', location=str(show_a_dir))
+        show2 = make_mock_show(rating_key=2, title='Show B', location=str(show_b_dir))
 
         section = MagicMock()
         section.type = 'show'
         section.all.return_value = [show1, show2]
+        section.locations = [str(tmp_path)]
         mock_plex.library.sections.return_value = [section]
 
-        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
-            resp = client.post('/api/settings/rescan')
+        resp = client.post('/api/settings/rescan')
 
         assert resp.status_code == 200
         data = resp.get_json()

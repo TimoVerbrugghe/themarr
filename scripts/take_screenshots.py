@@ -164,6 +164,8 @@ def take_screenshots(base_url: str = "http://127.0.0.1:18080") -> None:
         # 02 — TV library, poster view (dark)
         # ------------------------------------------------------------------
         page.click("text=TV Shows")
+        page.wait_for_timeout(400)
+        page.click("#view-btn-grid")
         page.wait_for_selector(".items-grid", timeout=5000)
         page.wait_for_timeout(400)
         page.screenshot(path=str(SCREENSHOTS_DIR / "02_tv_library_poster.png"))
@@ -239,6 +241,8 @@ def take_screenshots(base_url: str = "http://127.0.0.1:18080") -> None:
         # 09 — TV library, poster view (light)
         # ------------------------------------------------------------------
         page.click("text=TV Shows")
+        page.wait_for_timeout(400)
+        page.click("#view-btn-grid")
         page.wait_for_selector(".items-grid", timeout=5000)
         page.wait_for_timeout(400)
         page.screenshot(path=str(SCREENSHOTS_DIR / "09_tv_library_poster_light.png"))

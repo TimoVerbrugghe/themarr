@@ -27,3 +27,4 @@ wheels/
 *.log
 .yt_dlp_work/
 .pytest_cache/
+local-test/

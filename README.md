@@ -40,7 +40,7 @@ to the branch.
 
 ## Features
 
-- **Web UI** — dark/light theme with in-header toggle (default theme configurable via `DEFAULT_THEME`), poster thumbnails, in-browser audio playback; toggle between **poster (grid)** and **compact list** views; list view includes inline play/pause preview per item
+- **Web UI** — dark/light theme with in-header toggle (configurable via `DEFAULT_THEME`), poster thumbnails, in-browser audio playback with loading indicator; toggle between **poster (grid)** and **compact list** views (configurable via `DEFAULT_VIEW`); list view includes inline play/pause preview per item
 - **Multi-select** — select any number of items and bulk-download their themes in one click
 - **Per-item actions** — download from Plex (with preview), download from YouTube via `yt-dlp`, upload custom MP3, delete
 - **Settings page** — quick-action buttons (test Plex, refresh libraries, test Pushover, rescan files) and a full environment variable reference table
@@ -70,10 +70,24 @@ docker pull ghcr.io/timoverbrugghe/themarr:latest
 
 - Docker / Docker Compose
 - Plex Media Server with a TV Shows and/or Movies library
-- Writable media folders mounted into the container
+- Writable media folders mounted into the container **at the same path as your Plex container**
 - `ffmpeg` (included in the Docker image) for YouTube audio extraction
 
 ## Configuration
+
+### Mount paths
+
+Themarr resolves media paths directly from what Plex reports. For this to work, **mount your library folders at the same path inside the Themarr container as they are mounted inside your Plex container**.
+
+For example, if Plex has `/media/tvshows` and `/media/movies` as library locations:
+
+```yaml
+volumes:
+  - /media/tvshows:/media/tvshows
+  - /media/movies:/media/movies
+```
+
+No path-mapping environment variables are needed.
 
 ### Core
 
@@ -81,16 +95,12 @@ docker pull ghcr.io/timoverbrugghe/themarr:latest
 |---|---|---|---|
 | `PLEX_URL` | ✅ | — | Plex server URL, e.g. `http://192.168.1.100:32400` |
 | `PLEX_TOKEN` | ✅ | — | Plex API authentication token |
-| `TV_SHOWS_HOST_PATH` | ✅ | `/mnt/tv` | Host path for TV shows, mounted as `/tv` in container |
-| `MOVIES_HOST_PATH` | — | `/mnt/movies` | Host path for movies, mounted as `/movies` in container |
-| `TV_SHOWS_PATH` / `TV_PATH` | — | `/tv` | Container path for TV shows |
-| `MOVIES_PATH` | — | `/movies` | Container path for movies |
-| `WEB_PORT` | — | `8080` | Published web port |
+| `TV_SHOWS_HOST_PATH` | ✅ | `/mnt/tv` | Host path for TV shows — mounted at the same path in the container |
+| `MOVIES_HOST_PATH` | — | `/mnt/movies` | Host path for movies — mounted at the same path in the container |
 | `FLASK_DEBUG` | — | `false` | Enable Flask debug mode |
 | `DEFAULT_THEME` | — | `dark` | Default UI theme: `dark` or `light` (user can override in-browser) |
-| `VERBOSE` | — | `false` | Verbose CLI logging |
-| `VERBOSE_MATCHING` | — | `false` | Verbose match logging in CLI |
-| `OVERWRITE` | — | `false` | Re-download even if `theme.mp3` already exists |
+| `DEFAULT_VIEW` | — | `list` | Default library view: `list` or `grid` (user can override in-browser) |
+| `VERBOSE` | — | `false` | Verbose CLI batch-downloader logging |
 
 ### Pushover notifications
 

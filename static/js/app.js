@@ -21,7 +21,10 @@ let currentLibraryId = null;
 let currentItems = [];
 let activeFilter = 'all';
 let activeItemKey = null;
-let currentView = 'grid';
+// Default view: localStorage override → server default (data-default-view) → 'list'
+const _serverDefaultView = document.documentElement.dataset.defaultView || 'list';
+const _savedView = localStorage.getItem('themarr-view');
+let currentView = (_savedView === 'grid' || _savedView === 'list') ? _savedView : _serverDefaultView;
 const selectedItems = new Set();  // ratingKeys of currently selected items
 const libraryCache = new Map();   // libraryId -> items[], cleared on theme changes
 
@@ -34,6 +37,7 @@ let activePlayBtn = null; // button element that triggered playback
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
+  setView(currentView);  // apply default view and sync button active states
   checkPlexStatus();
   loadLibraries();
 });
@@ -79,7 +83,7 @@ async function checkPlexStatus() {
     const data = await apiGet('/api/status');
     if (data.connected) {
       el.className = 'plex-status plex-status--connected';
-      txt.textContent = data.server_name || 'Connected';
+      txt.textContent = `Plex Connected (${data.server_name || 'Unknown'})`;
     } else {
       el.className = 'plex-status plex-status--error';
       txt.textContent = 'Not connected';
@@ -383,7 +387,7 @@ function createItemRow(item) {
 }
 
 // ============================================================
-// Inline audio preview (list view)
+// Inline audio preview (list view + grid cards)
 // ============================================================
 function toggleInlineAudio(ratingKey, btn) {
   const src = `/api/items/${ratingKey}/theme`;
@@ -405,28 +409,41 @@ function toggleInlineAudio(ratingKey, btn) {
   // Stop whatever is currently playing
   stopInlineAudio();
 
+  // Show loading spinner immediately
+  btn.innerHTML = '';
+  btn.classList.add('loading');
+  btn.disabled = true;
+
   // Create and play a new audio element
   const audio = new Audio(src);
+
+  const onCanPlay = () => {
+    btn.classList.remove('loading');
+    btn.disabled = false;
+    btn.innerHTML = ICON_PAUSE;
+    btn.classList.add('playing');
+  };
+  audio.addEventListener('canplay', onCanPlay, { once: true });
+
   audio.addEventListener('ended', () => {
     btn.innerHTML = ICON_PLAY;
-    btn.classList.remove('playing');
+    btn.classList.remove('playing', 'loading');
+    btn.disabled = false;
     activeAudio = null;
     activePlayBtn = null;
   });
   audio.addEventListener('pause', () => {
-    // Sync button state whenever audio pauses (e.g. navigation)
     if (activePlayBtn === btn) {
       btn.innerHTML = ICON_PLAY;
       btn.classList.remove('playing');
     }
   });
   audio.play().catch(() => {
+    btn.classList.remove('loading', 'playing');
+    btn.disabled = false;
     btn.innerHTML = ICON_PLAY;
-    btn.classList.remove('playing');
   });
 
-  btn.innerHTML = ICON_PAUSE;
-  btn.classList.add('playing');
   activeAudio = audio;
   activePlayBtn = btn;
 }
@@ -448,6 +465,7 @@ function stopInlineAudio() {
 // ============================================================
 function setView(mode) {
   currentView = mode;
+  localStorage.setItem('themarr-view', mode);
   document.getElementById('view-btn-grid').classList.toggle('active', mode === 'grid');
   document.getElementById('view-btn-list').classList.toggle('active', mode === 'list');
   stopInlineAudio();
