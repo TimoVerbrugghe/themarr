@@ -48,7 +48,28 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('youtube-search-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') doYoutubeSearch();
   });
+
+  document.getElementById('download-overwrite-check').addEventListener('change', () => {
+    _syncOverwriteActionButton('btn-confirm-download', 'download-overwrite-check');
+  });
+  document.getElementById('upload-overwrite-check').addEventListener('change', () => {
+    _syncOverwriteActionButton('btn-confirm-upload', 'upload-overwrite-check');
+  });
+  document.getElementById('youtube-overwrite-check').addEventListener('change', () => {
+    _syncOverwriteActionButton('btn-confirm-youtube', 'youtube-overwrite-check');
+  });
 });
+
+function _syncOverwriteActionButton(buttonId, checkboxId, overwriteRequired = true) {
+  const button = document.getElementById(buttonId);
+  if (!button) return;
+  if (!overwriteRequired) {
+    button.disabled = false;
+    return;
+  }
+  const checkbox = document.getElementById(checkboxId);
+  button.disabled = !(checkbox && checkbox.checked);
+}
 
 // ============================================================
 // Theme
@@ -636,6 +657,7 @@ function openDownloadModal(ratingKey, title, hasLocalTheme, hasPlexTheme) {
   } else {
     overwriteDiv.classList.add('hidden');
   }
+  _syncOverwriteActionButton('btn-confirm-download', 'download-overwrite-check', hasLocalTheme);
 
   document.getElementById('btn-preview-plex').disabled = !hasPlexTheme;
   document.getElementById('modal-download-preview').classList.add('hidden');
@@ -690,6 +712,7 @@ function openUploadModal(ratingKey, title, hasLocalTheme) {
   } else {
     overwriteDiv.classList.add('hidden');
   }
+  _syncOverwriteActionButton('btn-confirm-upload', 'upload-overwrite-check', hasLocalTheme);
 
   openModal('modal-upload');
 }
@@ -754,6 +777,7 @@ function openYoutubeModal(ratingKey, title, hasLocalTheme) {
   } else {
     overwriteDiv.classList.add('hidden');
   }
+  _syncOverwriteActionButton('btn-confirm-youtube', 'youtube-overwrite-check', hasLocalTheme);
 
   const defaultQuery = `${title} theme song`;
   document.getElementById('youtube-search-input').value = defaultQuery;
