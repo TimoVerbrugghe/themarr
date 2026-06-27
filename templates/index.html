@@ -4,15 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Themarr</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/style.css?v={{ asset_version }}">
 </head>
 <body>
   <!-- Header -->
   <header class="header">
     <div class="header-inner">
       <a class="logo" href="/">
-        <img class="logo-image" src="/static/logo-themarr.svg" alt="Themarr">
+        <img class="logo-image" src="/static/logo-themarr.svg?v={{ asset_version }}" alt="Themarr">
       </a>
       <div class="header-right">
         <div id="plex-status" class="plex-status plex-status--unknown">
@@ -55,7 +55,7 @@
       <!-- Welcome screen -->
       <div id="welcome-screen" class="welcome-screen">
         <div class="welcome-icon">
-          <img class="welcome-logo" src="/static/logo-themarr.svg" alt="Themarr logo">
+          <img class="welcome-logo" src="/static/logo-themarr.svg?v={{ asset_version }}" alt="Themarr logo">
         </div>
         <h2>Welcome to Themarr</h2>
         <p>Select a library from the sidebar to manage theme music for your media.</p>
@@ -369,6 +369,6 @@
   <!-- Toast notifications -->
   <div id="toast-container" class="toast-container"></div>
 
-  <script src="/static/js/app.js"></script>
+  <script src="/static/js/app.js?v={{ asset_version }}"></script>
 </body>
 </html>

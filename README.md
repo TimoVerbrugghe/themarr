@@ -204,17 +204,6 @@ python3 -m pytest tests/ -v
 
 If you change `templates/index.html`, `static/css/style.css`, or
 `static/js/app.js`, CI will regenerate screenshots automatically.
-
-Only run this locally when you explicitly want to preview screenshots:
-
-```bash
-pip install playwright && playwright install chromium
-python3 scripts/take_screenshots.py
-```
-
-This requires no Plex server — all API calls are intercepted with mock data.
-The screenshot generator uses deterministic, generated mock poster/thumbnail images
-so poster layouts are visible without shipping real copyrighted artwork.
 The `.github/workflows/screenshots.yml` CI workflow does this automatically
 for PRs that touch UI files (artifact upload) and after merge on `main`
 (auto-commit).

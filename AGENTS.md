@@ -56,7 +56,6 @@ Primary environment variables are defined in `.env.example`:
 | `static/js/app.js` | Frontend JS (library browser, modals, multi-select, settings) |
 | `tests/test_web_app.py` | Web app unit tests |
 | `tests/test_plex_theme_downloader.py` | CLI unit tests |
-| `scripts/take_screenshots.py` | Playwright screenshot helper (mocks Plex API) |
 | `.github/workflows/docker-publish.yml` | CI: build + push to ghcr.io on main push |
 | `.github/workflows/screenshots.yml` | CI: screenshot artifacts on UI PRs; auto-update on main |
 | `.github/workflows/sanitize-screenshot-changes.yml` | CI: auto-removes direct screenshots/ changes from branches/PRs |
@@ -84,17 +83,6 @@ When modifying `templates/index.html`, `static/css/style.css`, or
 
 The `screenshots/` directory in the README serves as the primary visual
 documentation of the UI.  Stale screenshots mislead users and reviewers.
-
-### Manual regeneration (only when explicitly requested)
-
-```bash
-pip install playwright
-playwright install chromium
-python3 scripts/take_screenshots.py
-```
-
-No Plex server is needed — the script intercepts all `/api/*` calls with
-realistic mock data using Playwright's route-interception feature.
 
 ### Automation
 

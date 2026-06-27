@@ -25,6 +25,7 @@ YTDLP_WORKDIR.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 MAX_YOUTUBE_DURATION_SECONDS = 15 * 60
 MAX_BULK_ITEMS = 100
+ASSET_VERSION = str(int(time.time()))
 PLEX_RETRY_ATTEMPTS_DEFAULT = 10
 PLEX_RETRY_DELAY_DEFAULT = 30  # seconds between retry attempts
 ALLOWED_UPLOAD_TYPES = {'audio/mpeg', 'audio/mp3', 'application/octet-stream'}
@@ -655,7 +656,12 @@ def index():
     default_view = os.getenv('DEFAULT_VIEW', 'list').strip().lower()
     if default_view not in ('list', 'grid'):
         default_view = 'list'
-    return render_template('index.html', default_theme=default_theme, default_view=default_view)
+    return render_template(
+        'index.html',
+        default_theme=default_theme,
+        default_view=default_view,
+        asset_version=ASSET_VERSION,
+    )
 
 
 @app.route('/api/status')

@@ -43,9 +43,6 @@ use CI behavior instead of local screenshot commits:
 - Branch/PR `screenshots/**` edits are sanitized by
   `.github/workflows/sanitize-screenshot-changes.yml`.
 
-Do not run local screenshot generation during normal agent coding/testing
-unless explicitly requested by the user.
-
 ## Implementation constraints
 
 - Keep behavior Docker-compatible.
@@ -53,8 +50,7 @@ unless explicitly requested by the user.
 - Do not hardcode credentials, server URLs, or filesystem paths.
 - Favor explicit logging and clear error messages.
 - Update README when setup/behavior/config changes.
-- Do not generate screenshots during normal agent coding/testing sessions; rely
-  on CI unless explicitly asked.
+- Do not generate screenshots during normal agent coding/testing sessions.
 
 ## Files to check when changing configuration
 
@@ -70,6 +66,5 @@ unless explicitly requested by the user.
 | `templates/index.html` | Single-page app shell |
 | `static/css/style.css` | Sonarr-inspired dark/light theme CSS |
 | `static/js/app.js` | Frontend logic (library browser, modals, multi-select, settings) |
-| `scripts/take_screenshots.py` | Playwright screenshot helper (mock Plex data) |
 | `.github/workflows/screenshots.yml` | CI workflow — screenshot artifacts on UI PRs; auto-updates on main |
 | `.github/workflows/sanitize-screenshot-changes.yml` | CI workflow — auto-removes direct screenshots/ changes in branches/PRs |

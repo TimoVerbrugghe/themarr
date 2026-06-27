@@ -37,6 +37,22 @@ const libraryCache = new Map();   // libraryId -> items[], cleared on theme chan
 let activeAudio = null;   // HTMLAudioElement currently playing
 let activePlayBtn = null; // button element that triggered playback
 const STARTUP_POLL_INTERVAL_MS = 1500;
+let lastCompactActionMenuMode = null;
+const ACTION_MENU_COLLAPSE_BREAKPOINT = 1200;
+
+function isCompactActionMenuMode() {
+  return window.matchMedia(`(max-width: ${ACTION_MENU_COLLAPSE_BREAKPOINT}px)`).matches;
+}
+
+function handleActionMenuBreakpointChange() {
+  const compactMode = isCompactActionMenuMode();
+  if (compactMode === lastCompactActionMenuMode) return;
+  lastCompactActionMenuMode = compactMode;
+  closeAllRowActionMenus();
+  if (currentView === 'list' && currentItems.length) {
+    renderItems(currentItems);
+  }
+}
 
 // ============================================================
 // Init
@@ -45,6 +61,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
   setView(currentView);  // apply default view and sync button active states
   checkPlexStatus();
+  document.addEventListener('click', () => closeAllRowActionMenus());
+  lastCompactActionMenuMode = isCompactActionMenuMode();
+  window.addEventListener('resize', handleActionMenuBreakpointChange);
 
   // Allow pressing Enter in the YouTube search box to trigger search
   document.getElementById('youtube-search-input').addEventListener('keydown', (e) => {
@@ -463,45 +482,89 @@ function createItemRow(item) {
     row.appendChild(playBtn);
   }
 
-  const actions = document.createElement('details');
+  const actions = document.createElement('div');
   actions.className = 'item-actions item-actions-row item-actions-disclosure';
 
-  const actionMenuToggle = document.createElement('summary');
+  const actionMenuToggle = document.createElement('button');
   actionMenuToggle.className = 'action-btn action-btn-menu-toggle';
-  actionMenuToggle.title = 'More actions';
-  actionMenuToggle.innerHTML = '⋯ Actions';
+  actionMenuToggle.type = 'button';
+  actionMenuToggle.title = 'Actions';
+  actionMenuToggle.textContent = 'Actions';
+  actionMenuToggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const compactMode = isCompactActionMenuMode();
+    const shouldOpen = compactMode ? actionMenu.style.display === 'none' || actionMenu.style.display === '' : !actions.classList.contains('open');
+    closeAllRowActionMenus(actions);
+    if (shouldOpen) {
+      actions.classList.add('open');
+      if (compactMode) actionMenu.style.display = 'flex';
+    } else {
+      actions.classList.remove('open');
+      if (compactMode) actionMenu.style.display = 'none';
+    }
+  });
   actions.appendChild(actionMenuToggle);
 
   const actionMenu = document.createElement('div');
   actionMenu.className = 'item-actions-menu';
+  if (isCompactActionMenuMode()) {
+    actionMenu.style.display = 'none';
+  }
+  actionMenu.addEventListener('click', (e) => e.stopPropagation());
 
   // Button order: Download from Plex → YouTube → Copy theme from → Upload → Delete
   const downloadButton = createActionButton('action-btn action-btn-download', 'Download from Plex', BTN_PLEX[2]);
   downloadButton.disabled = !item.has_plex_theme;
-  downloadButton.addEventListener('click', () => openDownloadModal(item.ratingKey, item.title, item.has_local_theme, item.has_plex_theme));
+  downloadButton.addEventListener('click', () => {
+    closeAllRowActionMenus();
+    openDownloadModal(item.ratingKey, item.title, item.has_local_theme, item.has_plex_theme);
+  });
   actionMenu.appendChild(downloadButton);
 
   const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', BTN_YOUTUBE[2]);
-  youtubeButton.addEventListener('click', () => openYoutubeModal(item.ratingKey, item.title, item.has_local_theme));
+  youtubeButton.addEventListener('click', () => {
+    closeAllRowActionMenus();
+    openYoutubeModal(item.ratingKey, item.title, item.has_local_theme);
+  });
   actionMenu.appendChild(youtubeButton);
 
   const copyButton = createActionButton('action-btn action-btn-copy', 'Copy theme from another item', BTN_COPY[2]);
-  copyButton.addEventListener('click', () => openCopyThemeModal(item.ratingKey, item.title, item.has_local_theme));
+  copyButton.addEventListener('click', () => {
+    closeAllRowActionMenus();
+    openCopyThemeModal(item.ratingKey, item.title, item.has_local_theme);
+  });
   actionMenu.appendChild(copyButton);
 
   const uploadButton = createActionButton('action-btn action-btn-upload', 'Upload custom theme', BTN_UPLOAD[2]);
-  uploadButton.addEventListener('click', () => openUploadModal(item.ratingKey, item.title, item.has_local_theme));
+  uploadButton.addEventListener('click', () => {
+    closeAllRowActionMenus();
+    openUploadModal(item.ratingKey, item.title, item.has_local_theme);
+  });
   actionMenu.appendChild(uploadButton);
 
   const deleteButton = createActionButton('action-btn action-btn-delete', 'Delete theme', '🗑 Delete');
   deleteButton.disabled = !item.has_local_theme;
-  deleteButton.addEventListener('click', () => openDeleteModal(item.ratingKey, item.title));
+  deleteButton.addEventListener('click', () => {
+    closeAllRowActionMenus();
+    openDeleteModal(item.ratingKey, item.title);
+  });
   actionMenu.appendChild(deleteButton);
 
   actions.appendChild(actionMenu);
 
   row.appendChild(actions);
   return row;
+}
+
+function closeAllRowActionMenus(except = null) {
+  document.querySelectorAll('.item-actions-disclosure.open').forEach((menu) => {
+    if (menu === except) return;
+    menu.classList.remove('open');
+    if (isCompactActionMenuMode()) {
+      const panel = menu.querySelector('.item-actions-menu');
+      if (panel) panel.style.display = 'none';
+    }
+  });
 }
 
 // ============================================================
