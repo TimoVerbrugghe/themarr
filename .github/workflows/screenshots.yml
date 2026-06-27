@@ -22,13 +22,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout PR branch
+      - name: Checkout PR branch (same-repo PRs)
+        if: github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/checkout@v4
         with:
           ref: ${{ github.head_ref }}
-          # Use a PAT or the default token; write permission is set above.
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Checkout PR branch (fork PRs)
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
