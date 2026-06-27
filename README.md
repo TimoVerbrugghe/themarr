@@ -2,6 +2,20 @@
 
 Themarr manages Plex theme music for TV shows and movies. It includes a Flask-based web UI, a CLI batch downloader, Sonarr/Radarr webhook integration, and Pushover notifications.
 
+## Screenshots
+
+| Welcome | TV Shows library |
+|---|---|
+| ![Welcome screen](screenshots/01_welcome.png) | ![TV Shows library](screenshots/02_tv_library.png) |
+
+| Filter: No Theme | Bulk selection |
+|---|---|
+| ![Filter no theme](screenshots/03_filter_no_theme.png) | ![Bulk select](screenshots/04_bulk_select.png) |
+
+| Download modal | Movies library |
+|---|---|
+| ![Download modal](screenshots/05_download_modal.png) | ![Movies library](screenshots/06_movies_library.png) |
+
 ## Features
 
 - **Web UI** — Sonarr/Radarr-inspired dark theme, poster thumbnails, in-browser audio playback
