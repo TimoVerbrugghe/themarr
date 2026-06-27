@@ -1,0 +1,78 @@
+name: Sanitize screenshot changes
+
+# Screenshots are auto-generated on main by screenshots.yml.
+# This workflow removes direct screenshots/ changes from branch commits/PRs to
+# avoid binary merge conflicts.
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'screenshots/**'
+  push:
+    branches-ignore:
+      - main
+    paths:
+      - 'screenshots/**'
+
+permissions:
+  contents: write
+
+jobs:
+  sanitize-pr:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore screenshots from base branch
+        run: |
+          git fetch origin "${{ github.base_ref }}"
+          git restore --source "origin/${{ github.base_ref }}" --staged --worktree screenshots/
+          git add -A screenshots/
+          if git diff --cached --quiet; then
+            echo "No screenshot changes to sanitize."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: remove screenshots from PR branch [skip ci]"
+          git push
+
+  sanitize-push:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pushed branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore screenshots from default branch
+        run: |
+          git fetch origin "${{ github.event.repository.default_branch }}"
+          git restore --source "origin/${{ github.event.repository.default_branch }}" --staged --worktree screenshots/
+          git add -A screenshots/
+          if git diff --cached --quiet; then
+            echo "No screenshot changes to sanitize."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: remove screenshots from branch commit [skip ci]"
+          git push
+
+  forks-note:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail fork PRs that change screenshots
+        run: |
+          echo "::error::This PR includes screenshots/ changes, but workflow cannot push fixes to forks."
+          echo "::error::Please remove screenshots/ changes from the PR branch."
+          exit 1

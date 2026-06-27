@@ -58,7 +58,8 @@ Primary environment variables are defined in `.env.example`:
 | `tests/test_plex_theme_downloader.py` | CLI unit tests |
 | `scripts/take_screenshots.py` | Playwright screenshot helper (mocks Plex API) |
 | `.github/workflows/docker-publish.yml` | CI: build + push to ghcr.io on main push |
-| `.github/workflows/screenshots.yml` | CI: auto-update screenshots on UI-touching PRs |
+| `.github/workflows/screenshots.yml` | CI: screenshot artifacts on UI PRs; auto-update on main |
+| `.github/workflows/sanitize-screenshot-changes.yml` | CI: auto-removes direct screenshots/ changes from branches/PRs |
 
 ## Editing Rules for Agents
 
@@ -68,17 +69,23 @@ Primary environment variables are defined in `.env.example`:
 - Update `README.md` when behavior, setup, or configuration changes.
 - Re-run validation commands after edits.
 
-## Screenshot Rule — MANDATORY for Web UI Changes
+## Screenshot Rule
 
-**Whenever you modify `templates/index.html`, `static/css/style.css`, or
-`static/js/app.js`, you MUST regenerate the screenshots and commit them.**
+**Do not generate or commit screenshots during normal agent coding/testing
+sessions.**
+
+When modifying `templates/index.html`, `static/css/style.css`, or
+`static/js/app.js`, rely on CI:
+
+- PRs: screenshot artifact only (no branch commit)
+- main: screenshots regenerated and committed automatically after merge
 
 ### Why
 
 The `screenshots/` directory in the README serves as the primary visual
 documentation of the UI.  Stale screenshots mislead users and reviewers.
 
-### How to regenerate locally
+### Manual regeneration (only when explicitly requested)
 
 ```bash
 pip install playwright
@@ -91,14 +98,10 @@ realistic mock data using Playwright's route-interception feature.
 
 ### Automation
 
-`.github/workflows/screenshots.yml` runs automatically on any PR that touches
-UI files.  It takes screenshots and:
+`.github/workflows/screenshots.yml` runs automatically when UI files change:
 
-- **Same-repo PRs** — commits updated screenshots directly to the PR branch.
-- **Fork PRs** — uploads screenshots as a downloadable workflow artifact
-  (write access is not available for forks).
+- **Any PR** — uploads screenshots as a downloadable workflow artifact.
+- **Pushes to `main`** — commits updated screenshots directly to `main`.
 
-If the CI job runs after your code push, you may not need to run the script
-locally.  But if you are making multiple UI changes in one PR, run the script
-locally and commit the results rather than waiting for CI.
-
+If screenshot files are accidentally committed in a branch, CI sanitizes those
+changes automatically for same-repo branches/PRs.

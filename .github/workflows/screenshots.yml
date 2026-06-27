@@ -1,14 +1,21 @@
 name: Update screenshots
 
-# Runs automatically on any PR that modifies web UI files.
-# Starts the Flask app, uses Playwright to capture all UI states with mocked
-# Plex API data, then commits the updated screenshots back to the PR branch.
+# Runs automatically for:
+# - PRs that modify web UI files (uploads screenshots as artifact only)
+# - Pushes to main that modify web UI files (commits regenerated screenshots)
 #
-# For pull requests from forks (where write access is unavailable), the
-# screenshots are uploaded as a workflow artifact instead.
+# This keeps screenshots out of PR branches to avoid PNG merge conflicts while
+# still keeping screenshots in main up to date after merge.
 
 on:
   pull_request:
+    paths:
+      - 'templates/**'
+      - 'static/**'
+      - 'web_app.py'
+  push:
+    branches:
+      - main
     paths:
       - 'templates/**'
       - 'static/**'
@@ -22,19 +29,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout PR branch (same-repo PRs)
-        if: github.event.pull_request.head.repo.full_name == github.repository
+      - name: Checkout PR branch
+        if: github.event_name == 'pull_request'
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref }}
+          ref: ${{ github.event.pull_request.head.sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Checkout PR branch (fork PRs)
-        if: github.event.pull_request.head.repo.full_name != github.repository
+      - name: Checkout push branch
+        if: github.event_name == 'push'
         uses: actions/checkout@v4
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -49,8 +54,8 @@ jobs:
       - name: Take screenshots
         run: python3 scripts/take_screenshots.py
 
-      - name: Commit updated screenshots (same-repo PRs only)
-        if: github.event.pull_request.head.repo.full_name == github.repository
+      - name: Commit updated screenshots (push to main only)
+        if: github.event_name == 'push'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -59,8 +64,8 @@ jobs:
           git diff --cached --quiet || git commit -m "chore: update screenshots [skip ci]"
           git push
 
-      - name: Upload screenshots as artifact (fork PRs)
-        if: github.event.pull_request.head.repo.full_name != github.repository
+      - name: Upload screenshots as artifact (PRs only)
+        if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: screenshots

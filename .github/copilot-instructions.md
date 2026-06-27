@@ -35,7 +35,7 @@ screenshots and commit them alongside your code changes:
 - `static/css/style.css`
 - `static/js/app.js`
 
-**How to regenerate screenshots locally:**
+**How to regenerate screenshots locally (only when explicitly requested):**
 
 ```bash
 pip install playwright
@@ -47,8 +47,12 @@ The script starts Flask with mocked API data (no real Plex needed), takes
 Playwright screenshots of every UI state, and writes them to `screenshots/`.
 
 The `.github/workflows/screenshots.yml` GitHub Actions workflow runs this
-automatically on any PR that touches UI files and commits the results back to
-the branch (or uploads them as an artifact for fork PRs).
+automatically on any PR that touches UI files (artifact only), then commits
+the regenerated screenshots to `main` after merge.
+
+During normal agent coding/testing sessions, do **not** run
+`python3 scripts/take_screenshots.py` and do **not** commit `screenshots/**`
+changes to feature branches.
 
 ## Implementation constraints
 
@@ -57,7 +61,8 @@ the branch (or uploads them as an artifact for fork PRs).
 - Do not hardcode credentials, server URLs, or filesystem paths.
 - Favor explicit logging and clear error messages.
 - Update README when setup/behavior/config changes.
-- Update screenshots when web UI changes (see rule above).
+- Do not generate screenshots during normal agent coding/testing sessions; rely
+  on CI unless explicitly asked.
 
 ## Files to check when changing configuration
 
@@ -74,5 +79,5 @@ the branch (or uploads them as an artifact for fork PRs).
 | `static/css/style.css` | Sonarr-inspired dark/light theme CSS |
 | `static/js/app.js` | Frontend logic (library browser, modals, multi-select, settings) |
 | `scripts/take_screenshots.py` | Playwright screenshot helper (mock Plex data) |
-| `.github/workflows/screenshots.yml` | CI workflow — auto-updates screenshots on UI PRs |
-
+| `.github/workflows/screenshots.yml` | CI workflow — screenshot artifacts on UI PRs; auto-updates on main |
+| `.github/workflows/sanitize-screenshot-changes.yml` | CI workflow — auto-removes direct screenshots/ changes in branches/PRs |

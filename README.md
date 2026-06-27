@@ -4,11 +4,16 @@ Themarr manages Plex theme music for TV shows and movies. It includes a Flask-ba
 
 ## Screenshots
 
-Screenshots are kept up-to-date automatically: any PR that touches
-`templates/`, `static/`, or `web_app.py` triggers the
-[screenshots workflow](.github/workflows/screenshots.yml), which uses
-Playwright + mocked Plex data to regenerate all images and commit them back
-to the branch.
+Screenshots are kept up-to-date automatically:
+
+- PRs that touch `templates/`, `static/`, or `web_app.py` trigger the
+  [screenshots workflow](.github/workflows/screenshots.yml), which regenerates
+  screenshots and uploads them as a workflow artifact for review.
+- Pushes to `main` that touch those files regenerate screenshots and commit
+  them back to `main`.
+- Commits/PRs that directly modify `screenshots/**` are auto-sanitized by
+  `.github/workflows/sanitize-screenshot-changes.yml` (same-repo branches/PRs).
+  For fork PRs, the workflow cannot push fixes and fails with instructions.
 
 ### Dark theme
 
@@ -190,7 +195,9 @@ python3 -m pytest tests/ -v
 ### Regenerating screenshots
 
 If you change `templates/index.html`, `static/css/style.css`, or
-`static/js/app.js`, regenerate the screenshots:
+`static/js/app.js`, CI will regenerate screenshots automatically.
+
+Only run this locally when you explicitly want to preview screenshots:
 
 ```bash
 pip install playwright && playwright install chromium
@@ -199,5 +206,7 @@ python3 scripts/take_screenshots.py
 
 This requires no Plex server — all API calls are intercepted with mock data.
 The `.github/workflows/screenshots.yml` CI workflow does this automatically
-for PRs that touch UI files.
-
+for PRs that touch UI files (artifact upload) and after merge on `main`
+(auto-commit).
+If `screenshots/**` changes are committed in branch work, CI sanitizes them for
+same-repo branches/PRs.
