@@ -56,6 +56,20 @@
               <button class="btn btn-sm btn-secondary" id="filter-has-theme" onclick="setFilter('has_theme')">Has Theme</button>
               <button class="btn btn-sm btn-secondary" id="filter-no-theme" onclick="setFilter('no_theme')">No Theme</button>
             </div>
+            <label class="select-all-label">
+              <input type="checkbox" id="select-all-check" onchange="toggleSelectAll(this.checked)">
+              Select all
+            </label>
+          </div>
+        </div>
+
+        <!-- Bulk action bar (shown when items are selected) -->
+        <div id="bulk-bar" class="bulk-bar hidden">
+          <span class="bulk-bar-count" id="bulk-count">0 selected</span>
+          <div class="bulk-bar-actions">
+            <button class="btn btn-sm btn-primary" onclick="bulkDownload(false)">↓ Download Themes</button>
+            <button class="btn btn-sm btn-secondary" onclick="bulkDownload(true)">↓ Download (Overwrite)</button>
+            <button class="btn btn-sm btn-secondary" onclick="deselectAll()">✕ Clear selection</button>
           </div>
         </div>
 

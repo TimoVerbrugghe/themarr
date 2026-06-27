@@ -415,3 +415,318 @@ class TestIndexPage:
         assert b'id="library-nav"' in resp.data
         assert b'id="items-grid"' in resp.data
         assert b'/static/js/app.js' in resp.data
+
+
+# ============================================================
+# Bulk download tests
+# ============================================================
+
+class TestBulkDownload:
+    def test_bulk_download_success(self, client, mock_plex, tmp_path):
+        show = make_mock_show(location='/plex/tv/Test Show (2020)')
+        mock_plex.fetchItem.return_value = show
+        mock_plex.url.return_value = 'http://plex/theme.mp3'
+        mock_resp = MagicMock()
+        mock_resp.iter_content.return_value = [b'audio_data']
+        mock_plex._session.get.return_value = mock_resp
+
+        show_dir = tmp_path / 'Test Show (2020)'
+        show_dir.mkdir()
+
+        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
+            resp = client.post('/api/bulk/theme/download',
+                               json={'ratingKeys': [1], 'overwrite': False})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data['success']) == 1
+        assert data['success'][0]['ratingKey'] == 1
+
+    def test_bulk_download_missing_rating_keys(self, client, mock_plex):
+        resp = client.post('/api/bulk/theme/download', json={})
+        assert resp.status_code == 400
+
+    def test_bulk_download_empty_list(self, client, mock_plex):
+        resp = client.post('/api/bulk/theme/download', json={'ratingKeys': []})
+        assert resp.status_code == 400
+
+    def test_bulk_download_too_many_items(self, client, mock_plex):
+        resp = client.post('/api/bulk/theme/download',
+                           json={'ratingKeys': list(range(101))})
+        assert resp.status_code == 400
+
+    def test_bulk_download_skips_existing(self, client, mock_plex, tmp_path):
+        show = make_mock_show(location='/plex/tv/Test Show (2020)')
+        mock_plex.fetchItem.return_value = show
+
+        show_dir = tmp_path / 'Test Show (2020)'
+        show_dir.mkdir()
+        (show_dir / 'theme.mp3').write_bytes(b'existing')
+
+        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
+            resp = client.post('/api/bulk/theme/download',
+                               json={'ratingKeys': [1], 'overwrite': False})
+        data = resp.get_json()
+        assert len(data['skipped']) == 1
+
+    def test_bulk_download_no_plex_theme(self, client, mock_plex, tmp_path):
+        show = make_mock_show(has_theme=False)
+        mock_plex.fetchItem.return_value = show
+
+        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
+            resp = client.post('/api/bulk/theme/download',
+                               json={'ratingKeys': [1], 'overwrite': False})
+        data = resp.get_json()
+        assert len(data['no_theme']) == 1
+
+    def test_bulk_download_overwrite(self, client, mock_plex, tmp_path):
+        show = make_mock_show(location='/plex/tv/Test Show (2020)')
+        mock_plex.fetchItem.return_value = show
+        mock_plex.url.return_value = 'http://plex/theme.mp3'
+        mock_resp = MagicMock()
+        mock_resp.iter_content.return_value = [b'new_audio']
+        mock_plex._session.get.return_value = mock_resp
+
+        show_dir = tmp_path / 'Test Show (2020)'
+        show_dir.mkdir()
+        (show_dir / 'theme.mp3').write_bytes(b'old')
+
+        with patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
+            resp = client.post('/api/bulk/theme/download',
+                               json={'ratingKeys': [1], 'overwrite': True})
+        data = resp.get_json()
+        assert len(data['success']) == 1
+
+
+# ============================================================
+# Webhook tests
+# ============================================================
+
+class TestSonarrWebhook:
+    def test_series_add_queues_thread(self, client):
+        with patch('web_app._process_webhook_add') as mock_process, \
+             patch('web_app.threading') as mock_threading:
+            mock_thread = MagicMock()
+            mock_threading.Thread.return_value = mock_thread
+            resp = client.post('/api/webhooks/sonarr',
+                               json={'eventType': 'SeriesAdd',
+                                     'series': {'title': 'Breaking Bad', 'path': '/tv/Breaking Bad'}})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is True
+        assert data['eventType'] == 'SeriesAdd'
+        assert data['queued'] is True
+
+    def test_series_delete_acknowledged(self, client):
+        resp = client.post('/api/webhooks/sonarr',
+                           json={'eventType': 'SeriesDelete',
+                                 'series': {'title': 'Breaking Bad'}})
+        assert resp.status_code == 200
+        assert resp.get_json()['success'] is True
+
+    def test_test_event(self, client):
+        resp = client.post('/api/webhooks/sonarr',
+                           json={'eventType': 'Test'})
+        assert resp.status_code == 200
+
+    def test_invalid_json(self, client):
+        resp = client.post('/api/webhooks/sonarr',
+                           data='not-json',
+                           content_type='application/json')
+        assert resp.status_code == 400
+
+    def test_unauthorized_with_auth_configured(self, client):
+        with patch.dict(os.environ, {'WEBHOOK_USERNAME': 'user', 'WEBHOOK_PASSWORD': 'pass'}):
+            resp = client.post('/api/webhooks/sonarr',
+                               json={'eventType': 'Test'})
+        assert resp.status_code == 401
+
+    def test_authorized_with_correct_credentials(self, client):
+        import base64
+        token = base64.b64encode(b'user:pass').decode()
+        with patch.dict(os.environ, {'WEBHOOK_USERNAME': 'user', 'WEBHOOK_PASSWORD': 'pass'}):
+            resp = client.post('/api/webhooks/sonarr',
+                               json={'eventType': 'Test'},
+                               headers={'Authorization': f'Basic {token}'})
+        assert resp.status_code == 200
+
+    def test_series_add_no_title_not_queued(self, client):
+        with patch('web_app.threading') as mock_threading:
+            resp = client.post('/api/webhooks/sonarr',
+                               json={'eventType': 'SeriesAdd',
+                                     'series': {'title': '', 'path': '/tv/Unknown'}})
+        assert resp.status_code == 200
+        assert resp.get_json()['queued'] is False
+
+
+class TestRadarrWebhook:
+    def test_movie_added_queues_thread(self, client):
+        with patch('web_app.threading') as mock_threading:
+            mock_thread = MagicMock()
+            mock_threading.Thread.return_value = mock_thread
+            resp = client.post('/api/webhooks/radarr',
+                               json={'eventType': 'MovieAdded',
+                                     'movie': {'title': 'The Dark Knight',
+                                               'folderPath': '/movies/The Dark Knight (2008)'}})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is True
+        assert data['queued'] is True
+
+    def test_movie_added_uses_folder_path(self, client):
+        with patch('web_app.threading') as mock_threading:
+            mock_thread = MagicMock()
+            mock_threading.Thread.return_value = mock_thread
+            resp = client.post('/api/webhooks/radarr',
+                               json={'eventType': 'MovieAdded',
+                                     'movie': {'title': 'Test', 'folderPath': '/movies/Test (2020)'}})
+        assert resp.status_code == 200
+
+    def test_movie_deleted_acknowledged(self, client):
+        resp = client.post('/api/webhooks/radarr',
+                           json={'eventType': 'MovieDeleted',
+                                 'movie': {'title': 'The Dark Knight'}})
+        assert resp.status_code == 200
+
+    def test_test_event(self, client):
+        resp = client.post('/api/webhooks/radarr',
+                           json={'eventType': 'Test'})
+        assert resp.status_code == 200
+
+    def test_unauthorized(self, client):
+        with patch.dict(os.environ, {'WEBHOOK_USERNAME': 'u', 'WEBHOOK_PASSWORD': 'p'}):
+            resp = client.post('/api/webhooks/radarr', json={'eventType': 'Test'})
+        assert resp.status_code == 401
+
+
+# ============================================================
+# Pushover notification tests
+# ============================================================
+
+class TestPushoverNotification:
+    def test_no_op_without_config(self):
+        """send_pushover_notification does nothing if env vars are missing."""
+        from web_app import send_pushover_notification
+        with patch('web_app.http_requests') as mock_req, \
+             patch.dict(os.environ, {}, clear=True):
+            send_pushover_notification('Test', 'body')
+            mock_req.post.assert_not_called()
+
+    def test_sends_with_config(self):
+        from web_app import send_pushover_notification
+        with patch('web_app.http_requests') as mock_req, \
+             patch.dict(os.environ, {'PUSHOVER_APP_TOKEN': 'tok', 'PUSHOVER_USER_KEY': 'usr'}):
+            mock_resp = MagicMock()
+            mock_req.post.return_value = mock_resp
+            send_pushover_notification('Title', 'Body text')
+        mock_req.post.assert_called_once()
+        call_kwargs = mock_req.post.call_args
+        data = call_kwargs[1]['data'] if 'data' in call_kwargs[1] else call_kwargs[0][1]
+        assert data['token'] == 'tok'
+        assert data['user'] == 'usr'
+
+    def test_handles_request_failure_gracefully(self):
+        from web_app import send_pushover_notification
+        with patch('web_app.http_requests') as mock_req, \
+             patch.dict(os.environ, {'PUSHOVER_APP_TOKEN': 'tok', 'PUSHOVER_USER_KEY': 'usr'}):
+            mock_req.post.side_effect = Exception('Network error')
+            # Should not raise
+            send_pushover_notification('Title', 'Body text')
+
+    def test_pushover_called_on_download(self, client, mock_plex, tmp_path):
+        show = make_mock_show(location='/plex/tv/Test Show (2020)')
+        mock_plex.fetchItem.return_value = show
+        mock_plex.url.return_value = 'http://plex/theme.mp3'
+        mock_resp = MagicMock()
+        mock_resp.iter_content.return_value = [b'mp3data']
+        mock_plex._session.get.return_value = mock_resp
+
+        show_dir = tmp_path / 'Test Show (2020)'
+        show_dir.mkdir()
+
+        with patch('web_app.send_pushover_notification') as mock_notif, \
+             patch.dict(os.environ, {'TV_PATH': str(tmp_path)}):
+            resp = client.post('/api/items/1/theme/download', json={'overwrite': False})
+        assert resp.status_code == 200
+        mock_notif.assert_called_once()
+
+
+# ============================================================
+# Webhook helper: _check_webhook_auth
+# ============================================================
+
+class TestWebhookAuth:
+    def test_no_credentials_configured_allows_all(self, app):
+        from web_app import _check_webhook_auth
+        with app.test_request_context('/api/webhooks/sonarr',
+                                      method='POST',
+                                      environ_base={}):
+            with patch.dict(os.environ, {'WEBHOOK_USERNAME': '', 'WEBHOOK_PASSWORD': ''}):
+                assert _check_webhook_auth() is True
+
+    def test_correct_credentials(self, app):
+        import base64
+        from web_app import _check_webhook_auth
+        token = base64.b64encode(b'admin:secret').decode()
+        with app.test_request_context(
+            '/api/webhooks/sonarr',
+            method='POST',
+            headers={'Authorization': f'Basic {token}'},
+        ):
+            with patch.dict(os.environ, {'WEBHOOK_USERNAME': 'admin',
+                                         'WEBHOOK_PASSWORD': 'secret'}):
+                assert _check_webhook_auth() is True
+
+    def test_wrong_password(self, app):
+        import base64
+        from web_app import _check_webhook_auth
+        token = base64.b64encode(b'admin:wrong').decode()
+        with app.test_request_context(
+            '/api/webhooks/sonarr',
+            method='POST',
+            headers={'Authorization': f'Basic {token}'},
+        ):
+            with patch.dict(os.environ, {'WEBHOOK_USERNAME': 'admin',
+                                         'WEBHOOK_PASSWORD': 'secret'}):
+                assert _check_webhook_auth() is False
+
+
+# ============================================================
+# _find_plex_item helper
+# ============================================================
+
+class TestFindPlexItem:
+    def test_finds_by_title_search(self):
+        from web_app import _find_plex_item
+        plex = MagicMock()
+        show_item = MagicMock()
+        show_item.title = 'Breaking Bad'
+        section = MagicMock()
+        section.type = 'show'
+        section.search.return_value = [show_item]
+        plex.library.sections.return_value = [section]
+        result = _find_plex_item(plex, 'Breaking Bad', '/tv/Breaking Bad', 'show')
+        assert result == show_item
+
+    def test_returns_none_when_not_found(self):
+        from web_app import _find_plex_item
+        plex = MagicMock()
+        section = MagicMock()
+        section.type = 'show'
+        section.search.return_value = []
+        section.all.return_value = []
+        plex.library.sections.return_value = [section]
+        result = _find_plex_item(plex, 'Unknown Show', '/tv/Unknown', 'show')
+        assert result is None
+
+    def test_falls_back_to_folder_name_match(self):
+        from web_app import _find_plex_item
+        plex = MagicMock()
+        show_item = MagicMock()
+        show_item.locations = ['/plex/tv/Breaking Bad']
+        section = MagicMock()
+        section.type = 'show'
+        section.search.return_value = []  # title search misses
+        section.all.return_value = [show_item]
+        plex.library.sections.return_value = [section]
+        result = _find_plex_item(plex, 'Breaking Bad', '/arr/tv/Breaking Bad', 'show')
+        assert result == show_item

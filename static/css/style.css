@@ -205,6 +205,37 @@ a:hover { color: #7abfe8; }
 .filter-buttons { display: flex; gap: 4px; }
 
 /* ============================================================
+   Bulk action bar
+   ============================================================ */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: #1e3a5f;
+  border: 1px solid #2a5080;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #5d9fcf;
+  flex-wrap: wrap;
+}
+.bulk-bar-count {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.bulk-bar-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.select-all-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #888;
+  white-space: nowrap;
+}
+.select-all-label input { accent-color: #5d9fcf; cursor: pointer; }
+
+/* ============================================================
    Items Grid
    ============================================================ */
 .items-grid {
@@ -229,6 +260,24 @@ a:hover { color: #7abfe8; }
 }
 .item-card.has-theme { border-color: #1e4a2a; }
 .item-card.has-theme:hover { border-color: #27ae60; box-shadow: 0 4px 20px rgba(39, 174, 96, 0.15); }
+.item-card.selected {
+  border-color: #5d9fcf !important;
+  box-shadow: 0 0 0 2px rgba(93, 159, 207, 0.35) !important;
+}
+
+/* Selection checkbox overlay on poster */
+.item-select-wrap {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 10;
+}
+.item-select-wrap input[type="checkbox"] {
+  width: 18px; height: 18px;
+  accent-color: #5d9fcf;
+  cursor: pointer;
+  border-radius: 3px;
+}
 
 /* Poster */
 .item-poster {

@@ -7,6 +7,7 @@ let currentLibraryId = null;
 let currentItems = [];
 let activeFilter = 'all';
 let activeItemKey = null;
+const selectedItems = new Set();  // ratingKeys of currently selected items
 
 // ============================================================
 // Init
@@ -91,6 +92,10 @@ async function selectLibrary(id, title) {
   document.querySelectorAll('.filter-buttons .btn').forEach((button) => button.classList.remove('active'));
   document.getElementById('filter-all').classList.add('active');
 
+  // Clear selection when switching libraries
+  selectedItems.clear();
+  updateBulkBar();
+
   try {
     const items = await apiGet(`/api/libraries/${id}/items`);
     currentItems = items;
@@ -129,11 +134,26 @@ function renderItems(items) {
 
 function createItemCard(item) {
   const card = document.createElement('div');
-  card.className = `item-card${item.has_local_theme ? ' has-theme' : ''}`;
+  const isSelected = selectedItems.has(item.ratingKey);
+  card.className = `item-card${item.has_local_theme ? ' has-theme' : ''}${isSelected ? ' selected' : ''}`;
   card.id = `card-${item.ratingKey}`;
 
   const poster = document.createElement('div');
   poster.className = 'item-poster';
+
+  // Selection checkbox (top-left of poster)
+  const selectWrap = document.createElement('div');
+  selectWrap.className = 'item-select-wrap';
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.checked = isSelected;
+  checkbox.title = 'Select for bulk action';
+  checkbox.addEventListener('change', (e) => {
+    e.stopPropagation();
+    toggleItemSelection(item.ratingKey, e.target.checked, card);
+  });
+  selectWrap.appendChild(checkbox);
+  poster.appendChild(selectWrap);
 
   const image = document.createElement('img');
   image.src = `/api/poster/${item.ratingKey}`;
@@ -225,6 +245,110 @@ function updateStats(items) {
     <span class="stat-badge"><span class="dot dot-gray"></span>${total - withTheme} without theme</span>
     <span class="stat-badge">${total} total</span>
   `;
+}
+
+// ============================================================
+// Multi-select
+// ============================================================
+function toggleItemSelection(ratingKey, checked, card) {
+  if (checked) {
+    selectedItems.add(ratingKey);
+    card.classList.add('selected');
+  } else {
+    selectedItems.delete(ratingKey);
+    card.classList.remove('selected');
+  }
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  const count = selectedItems.size;
+  const bulkBar = document.getElementById('bulk-bar');
+  const bulkCount = document.getElementById('bulk-count');
+  const selectAllCheck = document.getElementById('select-all-check');
+
+  if (count === 0) {
+    bulkBar.classList.add('hidden');
+  } else {
+    bulkBar.classList.remove('hidden');
+    bulkCount.textContent = `${count} item${count !== 1 ? 's' : ''} selected`;
+  }
+
+  // Sync the select-all checkbox state
+  if (selectAllCheck) {
+    const visibleCards = document.querySelectorAll('.item-card');
+    if (visibleCards.length > 0 && count === visibleCards.length) {
+      selectAllCheck.checked = true;
+      selectAllCheck.indeterminate = false;
+    } else if (count === 0) {
+      selectAllCheck.checked = false;
+      selectAllCheck.indeterminate = false;
+    } else {
+      selectAllCheck.checked = false;
+      selectAllCheck.indeterminate = true;
+    }
+  }
+}
+
+function toggleSelectAll(checked) {
+  const visibleCards = document.querySelectorAll('.item-card');
+  visibleCards.forEach((card) => {
+    const ratingKey = parseInt(card.id.replace('card-', ''), 10);
+    const cb = card.querySelector('input[type="checkbox"]');
+    if (checked) {
+      selectedItems.add(ratingKey);
+      card.classList.add('selected');
+      if (cb) cb.checked = true;
+    } else {
+      selectedItems.delete(ratingKey);
+      card.classList.remove('selected');
+      if (cb) cb.checked = false;
+    }
+  });
+  updateBulkBar();
+}
+
+function deselectAll() {
+  selectedItems.clear();
+  document.querySelectorAll('.item-card.selected').forEach((card) => {
+    card.classList.remove('selected');
+    const cb = card.querySelector('input[type="checkbox"]');
+    if (cb) cb.checked = false;
+  });
+  const selectAllCheck = document.getElementById('select-all-check');
+  if (selectAllCheck) selectAllCheck.checked = false;
+  updateBulkBar();
+}
+
+async function bulkDownload(overwrite) {
+  if (selectedItems.size === 0) return;
+  const ratingKeys = Array.from(selectedItems);
+  const btn = overwrite
+    ? document.querySelectorAll('#bulk-bar .btn')[1]
+    : document.querySelectorAll('#bulk-bar .btn')[0];
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Downloading…';
+  try {
+    const data = await apiPost('/api/bulk/theme/download', { ratingKeys, overwrite });
+    const s = data.success?.length ?? 0;
+    const sk = data.skipped?.length ?? 0;
+    const f = data.failed?.length ?? 0;
+    const n = data.no_theme?.length ?? 0;
+    showToast('success', `Bulk done: ${s} downloaded, ${sk} skipped, ${n} no theme, ${f} failed`);
+    // Refresh item cards for successfully downloaded items
+    if (s > 0 && currentLibraryId) {
+      const items = await apiGet(`/api/libraries/${currentLibraryId}/items`);
+      currentItems = items;
+      updateStats(items);
+      renderItems(items);
+    }
+  } catch (err) {
+    showToast('error', `Bulk download failed: ${err}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
 }
 
 // ============================================================
@@ -447,6 +571,7 @@ async function refreshItem(ratingKey) {
       }
     }
     updateStats(items);
+    updateBulkBar();
   } catch (err) {
     console.error('Failed to refresh item', err);
     showToast('error', 'Theme list refresh failed. Reload the library to sync state.');
