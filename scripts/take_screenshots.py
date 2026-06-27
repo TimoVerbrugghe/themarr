@@ -193,7 +193,7 @@ def take_screenshots(base_url: str = "http://127.0.0.1:18080") -> None:
         page.wait_for_selector(".items-grid", timeout=3000)
         page.wait_for_timeout(300)
         # Select first 3 items
-        cards = page.query_selector_all(".item-card .select-checkbox")
+        cards = page.query_selector_all(".item-card .item-select-wrap input[type='checkbox']")
         for card in cards[:3]:
             card.check()
         page.wait_for_timeout(300)
@@ -217,7 +217,7 @@ def take_screenshots(base_url: str = "http://127.0.0.1:18080") -> None:
         page.click("#view-btn-list")
         page.wait_for_selector(".items-list", timeout=3000)
         page.wait_for_timeout(300)
-        rows = page.query_selector_all(".item-row .select-checkbox")
+        rows = page.query_selector_all(".item-row input[type='checkbox']")
         for row in rows[:4]:
             row.check()
         page.wait_for_timeout(300)
