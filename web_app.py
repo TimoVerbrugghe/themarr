@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Themarr Web Application - Flask-based Web UI for managing Plex theme music."""
 
+import json
 import logging
 import os
 import shutil
@@ -26,8 +27,6 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 MAX_YOUTUBE_DURATION_SECONDS = 15 * 60
 MAX_BULK_ITEMS = 100
 ASSET_VERSION = str(int(time.time()))
-PLEX_RETRY_ATTEMPTS_DEFAULT = 10
-PLEX_RETRY_DELAY_DEFAULT = 30  # seconds between retry attempts
 ALLOWED_UPLOAD_TYPES = {'audio/mpeg', 'audio/mp3', 'application/octet-stream'}
 ALLOWED_YOUTUBE_HOSTS = {'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'}
 
@@ -194,47 +193,9 @@ def send_pushover_notification(title, message):
 
 
 # ============================================================
-# Webhook helpers
+
+# Theme download helpers
 # ============================================================
-
-def _check_webhook_auth():
-    """Validate basic-auth credentials if WEBHOOK_USERNAME / WEBHOOK_PASSWORD are configured."""
-    username = os.getenv('WEBHOOK_USERNAME')
-    password = os.getenv('WEBHOOK_PASSWORD')
-    if not username or not password:
-        return True  # No auth configured — allow all
-    auth = request.authorization
-    return bool(auth and auth.username == username and auth.password == password)
-
-
-def _find_plex_item(plex, title, path, media_type):
-    """Search Plex for an item by title and optional path, returns first match or None."""
-    section_type = 'show' if media_type == 'show' else 'movie'
-    folder_name = Path(path).name.lower() if path else None
-
-    for section in plex.library.sections():
-        if section.type != section_type:
-            continue
-
-        # Fast: title search
-        results = section.search(title=title)
-        if results:
-            return results[0]
-
-        # Fallback: folder-name match (handles slightly different Plex titles)
-        if folder_name:
-            for item in section.all():
-                if not hasattr(item, 'locations') or not item.locations:
-                    continue
-                plex_path = item.locations[0]
-                if section_type == 'movie':
-                    item_folder = Path(plex_path).parent.name.lower()
-                else:
-                    item_folder = Path(plex_path).name.lower()
-                if item_folder == folder_name:
-                    return item
-
-    return None
 
 
 def _download_plex_theme_to_path(plex, item, theme_path):
@@ -251,59 +212,43 @@ def _download_plex_theme_to_path(plex, item, theme_path):
     return True
 
 
-def _process_webhook_add(title, path, media_type):
-    """Background thread: poll Plex for a newly added item then auto-download its theme."""
-    max_attempts = int(os.getenv('PLEX_RETRY_ATTEMPTS', str(PLEX_RETRY_ATTEMPTS_DEFAULT)))
-    base_delay = int(os.getenv('PLEX_RETRY_DELAY', str(PLEX_RETRY_DELAY_DEFAULT)))
-
-    logger.info("Webhook: queued Plex search for '%s' (type=%s, max=%d attempts, delay=%ds)",
-                title, media_type, max_attempts, base_delay)
-
-    for attempt in range(max_attempts):
-        delay = base_delay * (attempt + 1)  # Linear staggering: 30s, 60s, 90s …
-        logger.info("Webhook: sleeping %ds before attempt %d/%d for '%s'",
-                    delay, attempt + 1, max_attempts, title)
-        time.sleep(delay)
-
-        try:
-            plex = get_plex()
-            item = _find_plex_item(plex, title, path, media_type)
-
-            if item is None:
-                logger.info("Webhook: '%s' not yet in Plex (attempt %d)", title, attempt + 1)
-                continue
-
-            logger.info("Webhook: found '%s' in Plex as '%s'", title, item.title)
-
-            if not getattr(item, 'theme', None):
-                logger.info("Webhook: '%s' has no theme in Plex — nothing to download", item.title)
-                return
-
-            local_path = get_item_local_path(item)
-            if not local_path:
-                logger.warning("Webhook: cannot determine local path for '%s'", item.title)
-                return
-
-            theme_path = local_path / 'theme.mp3'
-            if theme_path.exists() and theme_path.stat().st_size > 0:
-                logger.info("Webhook: '%s' already has a theme file", item.title)
-                return
-
-            _download_plex_theme_to_path(plex, item, theme_path)
-            send_pushover_notification(
-                title='Theme Downloaded',
-                message=f'{item.title} theme auto-downloaded via webhook',
-            )
+def _process_plex_library_new(rating_key):
+    """Process a Plex library.new webhook event by downloading theme if needed.
+    
+    Retrieves the item from Plex by rating key, checks if theme.mp3 already exists,
+    and downloads the Plex theme if available.
+    """
+    try:
+        plex = get_plex()
+        item = plex.library.fetchItem(int(rating_key))
+        
+        logger.info("Plex webhook: processing new item '%s' (ratingKey=%s)", item.title, rating_key)
+        
+        if not getattr(item, 'theme', None):
+            logger.info("Plex webhook: '%s' has no theme in Plex — nothing to download", item.title)
             return
-
-        except Exception as exc:
-            logger.error("Webhook: attempt %d for '%s' failed: %s", attempt + 1, title, exc)
-
-    logger.warning("Webhook: gave up searching for '%s' after %d attempts", title, max_attempts)
-    send_pushover_notification(
-        title='Theme Download Failed',
-        message=f'Could not find \u201c{title}\u201d in Plex after {max_attempts} attempts',
-    )
+        
+        local_path = get_item_local_path(item)
+        if not local_path:
+            logger.warning("Plex webhook: cannot determine local path for '%s'", item.title)
+            return
+        
+        theme_path = local_path / 'theme.mp3'
+        if theme_path.exists() and theme_path.stat().st_size > 0:
+            logger.info("Plex webhook: '%s' already has a theme file", item.title)
+            return
+        
+        _download_plex_theme_to_path(plex, item, theme_path)
+        send_pushover_notification(
+            title='Theme Downloaded',
+            message=f'{item.title} theme auto-downloaded via Plex webhook',
+        )
+    except Exception as exc:
+        logger.error("Plex webhook: failed to process item %s: %s", rating_key, exc)
+        send_pushover_notification(
+            title='Theme Download Failed',
+            message=f'Failed to process Plex webhook for item {rating_key}',
+        )
 
 
 def item_to_dict(item, theme_dirs=None):
@@ -1140,80 +1085,48 @@ def bulk_download_themes():
 
 
 # ============================================================
-# Webhooks — Sonarr & Radarr
+# Webhooks — Plex
 # ============================================================
 
-@app.route('/api/webhooks/sonarr', methods=['POST'])
-def sonarr_webhook():
-    """Handle Sonarr webhook events (SeriesAdd, SeriesDelete, Test)."""
-    if not _check_webhook_auth():
-        return jsonify({'error': 'Unauthorized'}), 401
-
-    data = request.get_json(silent=True)
-    if not data:
-        return jsonify({'error': 'Invalid JSON body'}), 400
-
-    event_type = data.get('eventType', '')
-    logger.info('Sonarr webhook: eventType=%s', event_type)
-
-    if event_type == 'SeriesAdd':
-        series = data.get('series', {})
-        title = series.get('title', '')
-        path = series.get('path', '')
-        if title:
+@app.route('/api/webhooks/plex', methods=['POST'])
+def plex_webhook():
+    """Handle Plex webhook events (library.new).
+    
+    Plex sends webhooks as form-encoded data with a 'payload' field containing JSON.
+    For library.new events, we extract the ratingKey and process the theme download.
+    """
+    payload_str = request.form.get('payload', '')
+    if not payload_str:
+        logger.warning('Plex webhook: missing payload')
+        return jsonify({'success': True}), 200
+    
+    try:
+        payload = json.loads(payload_str)
+    except json.JSONDecodeError:
+        logger.warning('Plex webhook: invalid JSON payload')
+        return jsonify({'success': True}), 200
+    
+    event = payload.get('event', '')
+    logger.info('Plex webhook: event=%s', event)
+    
+    if event == 'library.new':
+        metadata = payload.get('Metadata', {})
+        if not metadata:
+            metadata = payload.get('metadata', {})
+        
+        rating_key = metadata.get('ratingKey')
+        if rating_key:
             threading.Thread(
-                target=_process_webhook_add,
-                args=(title, path, 'show'),
+                target=_process_plex_library_new,
+                args=(rating_key,),
                 daemon=True,
-                name=f'webhook-sonarr-{title[:30]}',
+                name=f'webhook-plex-{rating_key}',
             ).start()
-        return jsonify({'success': True, 'eventType': event_type, 'queued': bool(title)})
-
-    if event_type == 'SeriesDelete':
-        series = data.get('series', {})
-        logger.info("Sonarr SeriesDelete: '%s' — no action taken", series.get('title', ''))
-
-    elif event_type == 'Test':
-        logger.info('Sonarr webhook: test event received successfully')
-
-    return jsonify({'success': True, 'eventType': event_type})
-
-
-@app.route('/api/webhooks/radarr', methods=['POST'])
-def radarr_webhook():
-    """Handle Radarr webhook events (MovieAdded, MovieDeleted, Test)."""
-    if not _check_webhook_auth():
-        return jsonify({'error': 'Unauthorized'}), 401
-
-    data = request.get_json(silent=True)
-    if not data:
-        return jsonify({'error': 'Invalid JSON body'}), 400
-
-    event_type = data.get('eventType', '')
-    logger.info('Radarr webhook: eventType=%s', event_type)
-
-    if event_type == 'MovieAdded':
-        movie = data.get('movie', {})
-        title = movie.get('title', '')
-        # Radarr provides 'folderPath' for the movie folder, 'path' as fallback
-        path = movie.get('folderPath') or movie.get('path', '')
-        if title:
-            threading.Thread(
-                target=_process_webhook_add,
-                args=(title, path, 'movie'),
-                daemon=True,
-                name=f'webhook-radarr-{title[:30]}',
-            ).start()
-        return jsonify({'success': True, 'eventType': event_type, 'queued': bool(title)})
-
-    if event_type == 'MovieDeleted':
-        movie = data.get('movie', {})
-        logger.info("Radarr MovieDeleted: '%s' — no action taken", movie.get('title', ''))
-
-    elif event_type == 'Test':
-        logger.info('Radarr webhook: test event received successfully')
-
-    return jsonify({'success': True, 'eventType': event_type})
+            logger.info('Plex webhook: queued theme processing for ratingKey=%s', rating_key)
+        else:
+            logger.warning('Plex webhook: library.new event without ratingKey')
+    
+    return jsonify({'success': True}), 200
 
 
 # ============================================================

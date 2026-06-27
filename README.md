@@ -29,8 +29,8 @@ With theme songs in place, Plex can play that theme music while you browse your 
 - **Bulk actions**  
   Multi-select multiple items and download themes in batch.
 
-- **Sonarr/Radarr webhooks**  
-  Automatically process newly added media via webhook endpoints.
+- **Plex webhooks**  
+  Automatically download themes when new items are added to your Plex library.
 
 - **Pushover notifications (optional)**  
   Get push notifications when theme downloads complete.
@@ -91,10 +91,29 @@ If Plex uses `/media/tvshows` and `/media/movies`, Themarr must use those same c
 | `VERBOSE` | No | `false` | Enables verbose logging |
 | `PUSHOVER_APP_TOKEN` | No | — | Pushover app token (required together with `PUSHOVER_USER_KEY`) |
 | `PUSHOVER_USER_KEY` | No | — | Pushover user/group key (required together with `PUSHOVER_APP_TOKEN`) |
-| `WEBHOOK_USERNAME` | No | — | Optional Basic Auth username for Sonarr/Radarr webhook endpoints |
-| `WEBHOOK_PASSWORD` | No | — | Optional Basic Auth password for Sonarr/Radarr webhook endpoints |
-| `PLEX_RETRY_ATTEMPTS` | No | `10` | Max retry attempts after Sonarr/Radarr add events |
-| `PLEX_RETRY_DELAY` | No | `30` | Base retry delay (seconds) after Sonarr/Radarr add events |
+
+## Plex Webhooks
+
+Themarr can automatically download themes when new items are added to your Plex library using Plex webhooks.
+
+### Setup
+
+1. In Plex, go to **Settings > Webhooks**
+2. Click **Add Webhook**
+3. Enter your Themarr webhook URL:
+   ```
+   http://<themarr-host>:8080/api/webhooks/plex
+   ```
+   Replace `<themarr-host>` with your Themarr server's IP or hostname
+
+4. Click **Save**
+
+### How it works
+
+- When you add a new item to your Plex library, Plex sends a webhook event to Themarr
+- Themarr checks if the item already has a `theme.mp3` file
+- If not, and if the item has a theme in Plex, Themarr downloads it automatically
+- If Pushover notifications are configured, you'll receive a notification when the download completes
 
 ## Screenshots
 
