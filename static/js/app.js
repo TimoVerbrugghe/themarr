@@ -849,7 +849,9 @@ async function settingsRefreshLibraries() {
   try {
     libraryCache.clear();
     await loadLibraries();
-    showSettingsResult(true, '✓ Plex libraries refreshed successfully.');
+    // Rebuild server-side item cache in the background (don't await — it takes time)
+    apiPost('/api/settings/refresh-cache', {}).catch(() => {});
+    showSettingsResult(true, '✓ Plex libraries refreshed successfully. Item cache is rebuilding in the background.');
   } catch (err) {
     showSettingsResult(false, `✗ Failed to refresh libraries: ${err}`);
   }
@@ -879,7 +881,7 @@ async function settingsRescan() {
       libraryCache.clear();
       showSettingsResult(
         true,
-        `✓ Scan complete — ${data.total} items found: ${data.with_theme} with theme, ${data.without_theme} without.`,
+        `✓ Scan complete — ${data.total} items found: ${data.with_theme} with theme, ${data.without_theme} without. Cache is rebuilding in the background.`,
       );
     }
   } catch (err) {

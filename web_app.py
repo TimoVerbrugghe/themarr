@@ -344,6 +344,13 @@ def _invalidate_library_cache():
         _library_cache.clear()
 
 
+def _kick_off_cache_warmup():
+    """Invalidate the cache and rebuild all sections in a background thread."""
+    _invalidate_library_cache()
+    t = threading.Thread(target=_warm_library_cache, daemon=True, name='library-cache-rebuild')
+    t.start()
+
+
 def _warm_library_cache():
     """Background thread: pre-load every show/movie library section into the cache."""
     logger.info('Library cache warmup starting…')
@@ -843,6 +850,7 @@ def settings_rescan():
                 local_path = get_item_local_path(item)
                 if local_path and str(local_path) in theme_dirs:
                     with_theme += 1
+        _kick_off_cache_warmup()
         return jsonify({
             'success': True,
             'total': total,
@@ -851,6 +859,13 @@ def settings_rescan():
         })
     except Exception as exc:
         return error_response('Failed to rescan libraries', exc=exc)
+
+
+@app.route('/api/settings/refresh-cache', methods=['POST'])
+def settings_refresh_cache():
+    """Invalidate and rebuild the library item cache in the background."""
+    _kick_off_cache_warmup()
+    return jsonify({'success': True, 'message': 'Cache refresh started in background'})
 
 
 if __name__ == '__main__':
