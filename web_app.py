@@ -58,10 +58,14 @@ def plex_session_get(plex, url, **kwargs):
 def resolve_existing_media_path(path_value, item_type):
     """Return an existing Plex path when container mounts already match Plex paths."""
     candidate = Path(path_value)
-    if item_type == 'show' and candidate.exists():
-        return candidate
-    if item_type == 'movie' and candidate.parent != candidate and candidate.parent.exists():
-        return candidate.parent
+    if not candidate.exists():
+        return None
+    if item_type == 'show':
+        return candidate if candidate.is_dir() else None
+    if item_type == 'movie':
+        if candidate.is_file():
+            return candidate.parent
+        return candidate if candidate.is_dir() else None
     return None
 
 
