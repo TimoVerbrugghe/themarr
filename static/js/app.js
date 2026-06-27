@@ -160,7 +160,9 @@ function createItemCard(item) {
   image.alt = item.title;
   image.loading = 'lazy';
   image.onerror = () => {
-    poster.innerHTML = posterPlaceholder(item.type, item.title);
+    const placeholder = document.createElement('div');
+    placeholder.innerHTML = posterPlaceholder(item.type, item.title);
+    image.replaceWith(placeholder.firstChild);
   };
   poster.appendChild(image);
 
