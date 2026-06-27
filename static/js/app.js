@@ -565,12 +565,38 @@ function deselectAll() {
   updateBulkBar();
 }
 
-async function bulkDownload(overwrite) {
+async function bulkDownload() {
   if (selectedItems.size === 0) return;
   const ratingKeys = Array.from(selectedItems);
-  const btn = overwrite
-    ? document.querySelectorAll('#bulk-bar .btn')[1]
-    : document.querySelectorAll('#bulk-bar .btn')[0];
+
+  // Check how many selected items already have a local theme
+  const itemsWithTheme = currentItems.filter(
+    (item) => selectedItems.has(item.ratingKey) && item.has_local_theme
+  );
+
+  if (itemsWithTheme.length > 0) {
+    const total = ratingKeys.length;
+    const count = itemsWithTheme.length;
+    const msg = count === total
+      ? `All ${count} selected item${count !== 1 ? 's' : ''} already ${count !== 1 ? 'have' : 'has'} a theme. Do you want to overwrite or skip them?`
+      : `${count} of the ${total} selected items already ${count !== 1 ? 'have' : 'has'} a theme. Do you want to overwrite or skip them?`;
+    document.getElementById('modal-bulk-overwrite-message').textContent = msg;
+    openModal('modal-bulk-overwrite');
+    return;
+  }
+
+  await executeBulkDownload(false);
+}
+
+async function confirmBulkDownload(overwrite) {
+  closeModal('modal-bulk-overwrite');
+  await executeBulkDownload(overwrite);
+}
+
+async function executeBulkDownload(overwrite) {
+  if (selectedItems.size === 0) return;
+  const ratingKeys = Array.from(selectedItems);
+  const btn = document.getElementById('btn-bulk-download');
   const origText = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Downloading…';

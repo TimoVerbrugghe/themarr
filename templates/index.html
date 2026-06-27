@@ -80,8 +80,7 @@
         <div id="bulk-bar" class="bulk-bar hidden">
           <span class="bulk-bar-count" id="bulk-count">0 selected</span>
           <div class="bulk-bar-actions">
-            <button class="btn btn-sm btn-primary" onclick="bulkDownload(false)">↓ Download Themes</button>
-            <button class="btn btn-sm btn-secondary" onclick="bulkDownload(true)">↓ Download (Overwrite)</button>
+            <button id="btn-bulk-download" class="btn btn-sm btn-primary" onclick="bulkDownload()">↓ Download Themes</button>
             <button class="btn btn-sm btn-secondary" onclick="deselectAll()">✕ Clear selection</button>
           </div>
         </div>
@@ -280,6 +279,24 @@
       <div class="modal-footer">
         <button class="btn btn-secondary" onclick="closeModal('modal-delete')">Cancel</button>
         <button class="btn btn-danger" onclick="confirmDelete()">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bulk overwrite confirmation modal -->
+  <div id="modal-bulk-overwrite" class="modal-overlay hidden" onclick="closeModal('modal-bulk-overwrite', event)">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h3>Overwrite existing themes?</h3>
+        <button class="modal-close" onclick="closeModal('modal-bulk-overwrite')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="modal-bulk-overwrite-message"></p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('modal-bulk-overwrite')">Cancel</button>
+        <button class="btn btn-secondary" onclick="confirmBulkDownload(false)">Skip existing</button>
+        <button class="btn btn-primary" onclick="confirmBulkDownload(true)">Overwrite</button>
       </div>
     </div>
   </div>
