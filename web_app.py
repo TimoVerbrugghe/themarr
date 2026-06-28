@@ -152,6 +152,57 @@ def get_jellyfin_item_local_path(item):
     return candidate
 
 
+def _configured_media_roots():
+    """Return configured media root paths used to constrain filesystem operations."""
+    roots = []
+    for env_name in ('TV_SHOWS_HOST_PATH', 'MOVIES_HOST_PATH'):
+        raw_value = (os.getenv(env_name) or '').strip()
+        if not raw_value:
+            continue
+        try:
+            roots.append(Path(raw_value).resolve(strict=False))
+        except OSError:
+            logger.warning('Ignoring invalid %s path configuration', env_name)
+    return roots
+
+
+def _is_within_root(path, root):
+    """Return True when *path* is at or below *root*."""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_local_media_path(local_path):
+    """Resolve and validate local media path against configured roots."""
+    if local_path is None:
+        return None
+
+    try:
+        resolved = Path(local_path).resolve(strict=False)
+    except OSError as exc:
+        raise ValueError('Invalid local media path') from exc
+
+    if not resolved.is_absolute():
+        raise ValueError('Invalid local media path')
+
+    roots = _configured_media_roots()
+    if roots and not any(_is_within_root(resolved, root) for root in roots):
+        raise ValueError('Item path is outside configured media roots')
+
+    return resolved
+
+
+def _theme_file_path(local_path):
+    """Return validated theme file path for a validated media directory."""
+    validated_local_path = _validate_local_media_path(local_path)
+    if not validated_local_path:
+        return None
+    return validated_local_path / 'theme.mp3'
+
+
 def _normalize_provider(provider):
     normalized = (provider or '').strip().lower()
     if normalized not in {'plex', 'jellyfin'}:
@@ -258,7 +309,7 @@ def _get_item_context(provider, item_id):
     if provider == 'plex':
         plex = get_plex()
         item = plex.fetchItem(int(item_id))
-        local_path = get_item_local_path(item)
+        local_path = _validate_local_media_path(get_item_local_path(item))
         return {
             'provider': 'plex',
             'item_id': str(item.ratingKey),
@@ -270,7 +321,7 @@ def _get_item_context(provider, item_id):
         }
 
     jellyfin, _, item = _get_jellyfin_item(item_id)
-    local_path = get_jellyfin_item_local_path(item)
+    local_path = _validate_local_media_path(get_jellyfin_item_local_path(item))
     return {
         'provider': 'jellyfin',
         'item_id': str(item.get('Id')),
@@ -1111,7 +1162,7 @@ def get_library_items_by_provider(provider, section_id):
     try:
         provider = _normalize_provider(provider)
     except ValueError as exc:
-        return error_response(str(exc), status_code=400, exc=exc)
+        return error_response('Invalid provider', status_code=400, exc=exc)
 
     if provider == 'plex':
         try:
@@ -1172,7 +1223,7 @@ def get_provider_poster(provider, item_id):
     try:
         provider = _normalize_provider(provider)
     except ValueError as exc:
-        return error_response(str(exc), status_code=400, exc=exc)
+        return error_response('Invalid provider', status_code=400, exc=exc)
 
     if provider == 'plex':
         try:
@@ -1627,15 +1678,14 @@ def get_provider_theme(provider, item_id):
     try:
         provider = _normalize_provider(provider)
         context = _get_item_context(provider, item_id)
-        local_path = context['local_path']
-        if not local_path:
+        theme_path = _theme_file_path(context['local_path'])
+        if not theme_path:
             return jsonify({'error': 'Cannot determine local path for item'}), 404
-        theme_path = local_path / 'theme.mp3'
         if not theme_path.exists() or theme_path.stat().st_size == 0:
             return jsonify({'error': 'No theme file found'}), 404
         return send_file(str(theme_path), mimetype='audio/mpeg', conditional=True)
     except ValueError as exc:
-        return error_response(str(exc), status_code=400, exc=exc)
+        return error_response('Invalid provider or item identifier', status_code=400, exc=exc)
     except Exception as exc:
         return error_response(f'Failed to serve theme for {provider} item {item_id}', exc=exc)
 
@@ -1646,7 +1696,7 @@ def preview_provider_theme(provider, item_id):
     try:
         provider = _normalize_provider(provider)
     except ValueError as exc:
-        return error_response(str(exc), status_code=400, exc=exc)
+        return error_response('Invalid provider', status_code=400, exc=exc)
 
     if provider != 'plex':
         return jsonify({'error': 'Theme preview from provider source is only supported for Plex items'}), 400
@@ -1662,7 +1712,7 @@ def download_provider_theme(provider, item_id):
     try:
         provider = _normalize_provider(provider)
     except ValueError as exc:
-        return error_response(str(exc), status_code=400, exc=exc)
+        return error_response('Invalid provider', status_code=400, exc=exc)
 
     if provider != 'plex':
         return jsonify({'error': 'Downloading from provider source is only supported for Plex items'}), 400
@@ -1692,29 +1742,26 @@ def copy_provider_theme_from_item(provider, item_id):
         target_context = _get_item_context(provider, item_id)
         source_context = _get_item_context(source_provider, source_item_id)
 
-        target_local_path = target_context['local_path']
+        target_local_path = _validate_local_media_path(target_context['local_path'])
         if not target_local_path:
             return jsonify({'error': 'Cannot determine local path for target item'}), 404
 
-        source_local_path = source_context['local_path']
+        source_local_path = _validate_local_media_path(source_context['local_path'])
         if not source_local_path:
             return jsonify({'error': 'Cannot determine local path for source item'}), 404
 
-        source_theme_path = source_local_path / 'theme.mp3'
+        source_theme_path = _theme_file_path(source_local_path)
         if not source_theme_path.exists() or source_theme_path.stat().st_size == 0:
             return jsonify({'error': 'Source item has no local theme to copy'}), 404
 
-        target_theme_path = target_local_path / 'theme.mp3'
+        target_theme_path = _theme_file_path(target_local_path)
         if target_theme_path.exists() and target_theme_path.stat().st_size > 0 and not overwrite:
             return jsonify({'error': 'Theme already exists', 'exists': True}), 409
 
         target_local_path.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(source_theme_path), str(target_theme_path))
 
-        logger.info(
-            'Copied theme from %s item %s (%s) to %s item %s (%s)',
-            source_provider, source_item_id, source_theme_path, provider, item_id, target_theme_path,
-        )
+        logger.info('Copied theme from %s item to %s item', source_provider, provider)
         send_pushover_notification(
             'Theme Copied',
             f"{target_context['title']} theme copied from {source_context['title']}",
@@ -1722,7 +1769,7 @@ def copy_provider_theme_from_item(provider, item_id):
         item_dict, _ = _sync_cached_item_theme_state(provider, item_id)
         return jsonify({'success': True, 'path': str(target_theme_path), 'item': item_dict})
     except ValueError as exc:
-        return error_response(str(exc), status_code=400, exc=exc)
+        return error_response('Invalid provider or item identifier', status_code=400, exc=exc)
     except Exception as exc:
         return error_response(f'Failed to copy theme for {provider} item {item_id}', exc=exc)
 
@@ -1736,11 +1783,11 @@ def upload_provider_theme(provider, item_id):
             return jsonify({'error': 'No file provided in request'}), 400
 
         context = _get_item_context(provider, item_id)
-        local_path = context['local_path']
+        local_path = _validate_local_media_path(context['local_path'])
         if not local_path:
             return jsonify({'error': 'Cannot determine local path for item'}), 404
 
-        theme_path = local_path / 'theme.mp3'
+        theme_path = _theme_file_path(local_path)
         overwrite = request.form.get('overwrite', 'false').lower() == 'true'
         if theme_path.exists() and theme_path.stat().st_size > 0 and not overwrite:
             return jsonify({'error': 'Theme already exists', 'exists': True}), 409
@@ -1754,12 +1801,12 @@ def upload_provider_theme(provider, item_id):
         local_path.mkdir(parents=True, exist_ok=True)
         upload_file.save(str(theme_path))
 
-        logger.info('Uploaded theme for %s item %s to %s', provider, item_id, theme_path)
+        logger.info('Uploaded theme for %s item', provider)
         send_pushover_notification('Theme Uploaded', f"{context['title']} theme uploaded")
         item_dict, _ = _sync_cached_item_theme_state(provider, item_id)
         return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
     except ValueError as exc:
-        return error_response(str(exc), status_code=400, exc=exc)
+        return error_response('Invalid provider or item identifier', status_code=400, exc=exc)
     except Exception as exc:
         return error_response(f'Failed to upload theme for {provider} item {item_id}', exc=exc)
 
@@ -1780,11 +1827,11 @@ def download_provider_from_youtube(provider, item_id):
         overwrite = data.get('overwrite', False)
         context = _get_item_context(provider, item_id)
 
-        local_path = context['local_path']
+        local_path = _validate_local_media_path(context['local_path'])
         if not local_path:
             return jsonify({'error': 'Cannot determine local path for item'}), 404
 
-        theme_path = local_path / 'theme.mp3'
+        theme_path = _theme_file_path(local_path)
         if theme_path.exists() and theme_path.stat().st_size > 0 and not overwrite:
             return jsonify({'error': 'Theme already exists', 'exists': True}), 409
 
@@ -1815,7 +1862,7 @@ def download_provider_from_youtube(provider, item_id):
             local_path.mkdir(parents=True, exist_ok=True)
             shutil.move(str(mp3_files[0]), str(theme_path))
 
-        logger.info('Downloaded YouTube theme for %s item %s to %s', provider, item_id, theme_path)
+        logger.info('Downloaded YouTube theme for %s item', provider)
         send_pushover_notification('Theme Downloaded', f"{context['title']} theme downloaded from YouTube")
         item_dict, _ = _sync_cached_item_theme_state(provider, item_id)
         return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
@@ -1824,7 +1871,7 @@ def download_provider_from_youtube(provider, item_id):
         logger.error('Failed YouTube download for %s:%s: %s', provider, item_id, exc)
         return jsonify({'error': msg}), 500
     except ValueError as exc:
-        return error_response(str(exc), status_code=400, exc=exc)
+        return error_response('Invalid provider or item identifier', status_code=400, exc=exc)
     except Exception as exc:
         return error_response(f'Failed YouTube download for {provider} item {item_id}', exc=exc)
 
@@ -1835,10 +1882,10 @@ def delete_provider_theme(provider, item_id):
     try:
         provider = _normalize_provider(provider)
         context = _get_item_context(provider, item_id)
-        local_path = context['local_path']
+        local_path = _validate_local_media_path(context['local_path'])
         if not local_path:
             return jsonify({'error': 'Cannot determine local path for item'}), 404
-        theme_path = local_path / 'theme.mp3'
+        theme_path = _theme_file_path(local_path)
         if not theme_path.exists():
             return jsonify({'error': 'No theme file to delete'}), 404
         theme_path.unlink()
@@ -1846,7 +1893,7 @@ def delete_provider_theme(provider, item_id):
         item_dict, _ = _sync_cached_item_theme_state(provider, item_id)
         return jsonify({'success': True, 'item': item_dict})
     except ValueError as exc:
-        return error_response(str(exc), status_code=400, exc=exc)
+        return error_response('Invalid provider or item identifier', status_code=400, exc=exc)
     except Exception as exc:
         return error_response(f'Failed to delete theme for {provider} item {item_id}', exc=exc)
 
