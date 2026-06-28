@@ -92,6 +92,13 @@ class TestStatus:
             assert data['error'] == 'Unable to connect to Plex'
 
 
+class TestHealth:
+    def test_health_endpoint(self, client):
+        resp = client.get('/health')
+        assert resp.status_code == 200
+        assert resp.get_json() == {'status': 'healthy'}
+
+
 class TestCacheStatus:
     def test_cache_status_endpoint(self, client):
         import web_app
@@ -335,6 +342,31 @@ class TestThemeDownload:
         assert resp.status_code == 200
 
 
+class TestThemePreview:
+    def test_preview_plex_theme_not_available(self, client, mock_plex):
+        show = make_mock_show(has_theme=False)
+        mock_plex.fetchItem.return_value = show
+
+        resp = client.get('/api/items/1/theme/preview')
+
+        assert resp.status_code == 404
+        assert 'error' in resp.get_json()
+
+    def test_preview_plex_theme_success(self, client, mock_plex):
+        show = make_mock_show(has_theme=True)
+        mock_plex.fetchItem.return_value = show
+        mock_plex.url.return_value = 'http://plex/theme.mp3'
+        mock_resp = MagicMock()
+        mock_resp.iter_content.return_value = [b'preview_audio']
+        mock_plex._session.get.return_value = mock_resp
+
+        resp = client.get('/api/items/1/theme/preview')
+
+        assert resp.status_code == 200
+        assert resp.mimetype == 'audio/mpeg'
+        assert resp.data == b'preview_audio'
+
+
 class TestThemeUpload:
     def test_upload_theme(self, client, mock_plex, tmp_path):
         show_dir = tmp_path / 'Test Show (2020)'
@@ -526,6 +558,101 @@ class TestThemeYoutube:
             resp = client.post('/api/items/1/theme/youtube',
                                json={'url': 'https://youtube.com/watch?v=test', 'overwrite': False})
         assert resp.status_code == 200
+
+
+class TestThemerrDB:
+    def test_check_themerrdb_available(self, client, mock_plex):
+        show = make_mock_show()
+        mock_plex.fetchItem.return_value = show
+
+        with patch('web_app.get_themerrdb_theme', return_value={'youtube_theme_url': 'https://youtube.com/watch?v=test'}):
+            resp = client.get('/api/items/1/theme/themerrdb/check')
+
+        assert resp.status_code == 200
+        assert resp.get_json() == {
+            'available': True,
+            'youtube_url': 'https://youtube.com/watch?v=test',
+        }
+
+    def test_check_themerrdb_unavailable(self, client, mock_plex):
+        show = make_mock_show()
+        mock_plex.fetchItem.return_value = show
+
+        with patch('web_app.get_themerrdb_theme', return_value=None):
+            resp = client.get('/api/items/1/theme/themerrdb/check')
+
+        assert resp.status_code == 200
+        assert resp.get_json() == {'available': False}
+
+    def test_preview_themerrdb_not_found(self, client, mock_plex):
+        show = make_mock_show()
+        mock_plex.fetchItem.return_value = show
+
+        with patch('web_app.get_themerrdb_theme', return_value=None):
+            resp = client.get('/api/items/1/theme/themerrdb/preview')
+
+        assert resp.status_code == 404
+        assert 'error' in resp.get_json()
+
+    def test_preview_themerrdb_success(self, client, mock_plex):
+        show = make_mock_show()
+        mock_plex.fetchItem.return_value = show
+
+        with patch('web_app.get_themerrdb_theme', return_value={'youtube_theme_url': 'https://youtube.com/watch?v=test'}), \
+             patch('web_app.yt_dlp') as mock_ytdlp, \
+             patch('web_app.http_requests') as mock_requests:
+            mock_ydl = MagicMock()
+            mock_ydl.extract_info.return_value = {'url': 'https://audio.example/stream'}
+            mock_ytdlp.YoutubeDL.return_value.__enter__ = lambda s: mock_ydl
+            mock_ytdlp.YoutubeDL.return_value.__exit__ = MagicMock(return_value=False)
+
+            mock_resp = MagicMock()
+            mock_resp.iter_content.return_value = [b'audio_chunk']
+            mock_requests.get.return_value = mock_resp
+
+            resp = client.get('/api/items/1/theme/themerrdb/preview')
+
+        assert resp.status_code == 200
+        assert resp.mimetype == 'audio/mpeg'
+        assert resp.data == b'audio_chunk'
+
+    def test_download_from_themerrdb_success(self, client, mock_plex, tmp_path):
+        show_dir = tmp_path / 'Test Show (2020)'
+        show_dir.mkdir()
+        show = make_mock_show(location=str(show_dir))
+        mock_plex.fetchItem.return_value = show
+
+        fake_tmpdir = tmp_path / 'themerrdb_tmp'
+        fake_tmpdir.mkdir()
+        (fake_tmpdir / 'theme.mp3').write_bytes(b'themerrdb_audio')
+
+        with patch('web_app.get_themerrdb_theme', return_value={'youtube_theme_url': 'https://youtube.com/watch?v=test'}), \
+             patch('web_app.yt_dlp') as mock_ytdlp, \
+             patch('tempfile.TemporaryDirectory') as mock_tmpdir:
+            mock_tmpdir.return_value.__enter__ = lambda s: str(fake_tmpdir)
+            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
+            mock_ytdlp.YoutubeDL.return_value.__enter__ = lambda s: MagicMock()
+            mock_ytdlp.YoutubeDL.return_value.__exit__ = MagicMock(return_value=False)
+
+            resp = client.post('/api/items/1/theme/themerrdb',
+                               json={'overwrite': False},
+                               content_type='application/json')
+
+        assert resp.status_code == 200
+        assert resp.get_json()['success'] is True
+        assert (show_dir / 'theme.mp3').read_bytes() == b'themerrdb_audio'
+
+    def test_download_from_themerrdb_already_exists(self, client, mock_plex, tmp_path):
+        show_dir = tmp_path / 'Test Show (2020)'
+        show_dir.mkdir()
+        (show_dir / 'theme.mp3').write_bytes(b'existing_theme')
+        show = make_mock_show(location=str(show_dir))
+        mock_plex.fetchItem.return_value = show
+
+        resp = client.post('/api/items/1/theme/themerrdb', json={'overwrite': False})
+
+        assert resp.status_code == 409
+        assert resp.get_json()['exists'] is True
 
 
 class TestYoutubeSearch:
@@ -889,6 +1016,41 @@ class TestPlexWebhook:
                           data={'payload': json.dumps(payload)})
         assert resp.status_code == 200
 
+    def test_process_library_new_downloads_theme_when_missing(self, tmp_path):
+        import web_app
+
+        show_dir = tmp_path / 'New Show (2024)'
+        show_dir.mkdir()
+        show = make_mock_show(title='New Show', location=str(show_dir), has_theme=True)
+
+        plex = MagicMock()
+        plex.library.fetchItem.return_value = show
+
+        with patch('web_app.get_plex', return_value=plex), \
+             patch('web_app._download_plex_theme_to_path') as mock_download, \
+             patch('web_app.send_pushover_notification') as mock_notify:
+            web_app._process_plex_library_new('123')
+
+        mock_download.assert_called_once()
+        mock_notify.assert_called_once()
+
+    def test_process_library_new_skips_when_theme_exists(self, tmp_path):
+        import web_app
+
+        show_dir = tmp_path / 'Existing Show (2024)'
+        show_dir.mkdir()
+        (show_dir / 'theme.mp3').write_bytes(b'existing')
+        show = make_mock_show(title='Existing Show', location=str(show_dir), has_theme=True)
+
+        plex = MagicMock()
+        plex.library.fetchItem.return_value = show
+
+        with patch('web_app.get_plex', return_value=plex), \
+             patch('web_app._download_plex_theme_to_path') as mock_download:
+            web_app._process_plex_library_new('123')
+
+        mock_download.assert_not_called()
+
 
 # ============================================================
 # Pushover notification tests
@@ -999,3 +1161,13 @@ class TestSettingsRescan:
             resp = client.post('/api/settings/rescan')
         assert resp.status_code == 500
         assert 'error' in resp.get_json()
+
+
+class TestSettingsRefreshCache:
+    def test_refresh_cache_starts_background_warmup(self, client):
+        with patch('web_app._kick_off_cache_warmup') as mock_warmup:
+            resp = client.post('/api/settings/refresh-cache')
+
+        assert resp.status_code == 200
+        assert resp.get_json()['success'] is True
+        mock_warmup.assert_called_once()
