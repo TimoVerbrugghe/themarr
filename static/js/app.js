@@ -29,6 +29,7 @@ let currentLibraryId = null;
 let currentLibraryProvider = null;
 let currentItems = [];
 let activeFilter = 'all';
+let activeFilters = { theme: 'all', plex: false, themerrdb: false };
 let activeItemContext = null;
 // Default view: localStorage override → server default (data-default-view) → 'list'
 const _serverDefaultView = document.documentElement.dataset.defaultView || 'list';
@@ -43,46 +44,156 @@ let activePlayBtn = null; // button element that triggered playback
 const STARTUP_POLL_INTERVAL_MS = 1500;
 let lastCompactActionMenuMode = null;
 const ACTION_MENU_COLLAPSE_BREAKPOINT = 1200;
-let apiAuthToken = '';
+// API key is kept in memory only; it is never written to localStorage.
+// The server returns it from the authenticated GET /api/settings/runtime endpoint.
+let apiKey = '';
+// Auth mode reported by /api/init: 'disabled' | 'credentials' | 'misconfigured'
+let appAuthMode = 'misconfigured';
+const NOT_AUTHENTICATED_TEXT = 'Not authenticated';
+// Remove any API key previously stored in localStorage by older versions of this app.
+try { localStorage.removeItem('themarr-api-token'); } catch (_) { /* ignore */ }
 
 function makeLibraryCacheKey(provider, libraryId) {
   return `${provider}:${libraryId}`;
 }
 
-function copyApiToken() {
-  const tokenEl = document.getElementById('runtime-api-token');
-  if (!tokenEl) return;
-  const token = tokenEl.textContent || '';
-  if (!token) return;
-  navigator.clipboard.writeText(token)
-    .then(() => showSettingsResult(true, '✓ API token copied to clipboard'))
-    .catch((err) => showSettingsResult(false, `✗ Failed to copy token: ${err}`));
+function copyApiKey() {
+  const key = apiKey || '';
+  if (!key) {
+    showSettingsResult(false, '✗ Not logged in — paste the API key from the server logs and click Login first');
+    return;
+  }
+  navigator.clipboard.writeText(key)
+    .then(() => showSettingsResult(true, '✓ API key copied to clipboard'))
+    .catch((err) => showSettingsResult(false, `✗ Failed to copy API key: ${err}`));
+}
+
+// ============================================================
+// Login overlay helpers
+// ============================================================
+
+function showLoginOverlay(authMode) {
+  const overlay = document.getElementById('login-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('hidden');
+  const credForm = document.getElementById('login-form-credentials');
+  credForm && credForm.classList.remove('hidden');
+  setLoginError('credentials', '');
+  document.getElementById('login-username') && document.getElementById('login-username').focus();
+}
+
+function hideLoginOverlay() {
+  const overlay = document.getElementById('login-overlay');
+  if (overlay) overlay.classList.add('hidden');
+}
+
+function setLoginError(formType, msg) {
+  const elId = 'login-error';
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (msg) {
+    el.textContent = msg;
+    el.classList.remove('hidden');
+  } else {
+    el.classList.add('hidden');
+  }
+}
+
+async function loginWithCredentials(event) {
+  if (event) event.preventDefault();
+  const usernameEl = document.getElementById('login-username');
+  const passwordEl = document.getElementById('login-password');
+  const submitBtn = document.getElementById('login-submit-btn');
+  const username = (usernameEl ? usernameEl.value : '').trim();
+  const password = (passwordEl ? passwordEl.value : '').trim();
+  setLoginError('credentials', '');
+  if (!username || !password) {
+    setLoginError('credentials', 'Username and password are required.');
+    return;
+  }
+  if (submitBtn) submitBtn.disabled = true;
+  try {
+    const resp = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!resp.ok) {
+      const err = (await resp.json().catch(() => ({}))).error || 'Invalid username or password';
+      setLoginError('credentials', err);
+      return;
+    }
+    if (passwordEl) passwordEl.value = '';
+    hideLoginOverlay();
+    await postLoginInit();
+  } catch (err) {
+    setLoginError('credentials', `Login failed: ${err}`);
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
+}
+
+/** Called after successful login to resume the startup flow. */
+async function postLoginInit() {
+  await refreshApiKey();
+  await waitForStartupHydration();
+  loadLibraries();
+}
+
+// ============================================================
+// Settings page auth actions (inline API key login / logout)
+// ============================================================
+
+async function logoutSession() {
+  try {
+    await fetch('/api/auth/logout', { method: 'POST' });
+  } catch (_) { /* ignore network errors on logout */ }
+  apiKey = '';
+  const keyEl = document.getElementById('runtime-api-key');
+  const sourceEl = document.getElementById('runtime-api-key-source');
+  if (keyEl) keyEl.textContent = NOT_AUTHENTICATED_TEXT;
+  if (sourceEl) sourceEl.textContent = NOT_AUTHENTICATED_TEXT;
+  showSettingsResult(true, '✓ Logged out');
+  // If auth is required, redirect back to login overlay
+  if (appAuthMode !== 'disabled') {
+    showLoginOverlay(appAuthMode);
+  }
 }
 
 async function loadSettingsRuntime() {
   try {
-    const data = await refreshApiAuthToken();
-    const tokenEl = document.getElementById('runtime-api-token');
-    const sourceEl = document.getElementById('runtime-api-token-source');
+    const data = await apiGet('/api/settings/runtime');
+    // Store API key in memory so header-based API calls keep working
+    if (data.api_key) apiKey = data.api_key;
+    const keyEl = document.getElementById('runtime-api-key');
+    const sourceEl = document.getElementById('runtime-api-key-source');
     const workersEl = document.getElementById('runtime-worker-count');
     const pageSizeEl = document.getElementById('runtime-library-page-size');
     const pageMaxEl = document.getElementById('runtime-library-page-max');
     const posterCacheEl = document.getElementById('runtime-poster-cache-max');
-    if (tokenEl) tokenEl.textContent = apiAuthToken || 'Unavailable';
-    if (sourceEl) sourceEl.textContent = data.api_auth_token_generated ? 'auto-generated at startup' : 'from API_AUTH_TOKEN';
+    if (keyEl) keyEl.textContent = data.api_key ? '••••••••' + data.api_key.slice(-4) : 'Not configured';
+    if (sourceEl) {
+      sourceEl.textContent = data.api_key_configured ? 'from API_KEY env variable' : 'auto-generated at startup';
+    }
     if (workersEl) workersEl.textContent = String(data.background_worker_count);
     if (pageSizeEl) pageSizeEl.textContent = String(data.library_page_size);
     if (pageMaxEl) pageMaxEl.textContent = String(data.library_page_size_max);
     if (posterCacheEl) posterCacheEl.textContent = String(data.poster_cache_max_items);
   } catch (err) {
-    showSettingsResult(false, `✗ Failed to load runtime settings: ${err}`);
+    const keyEl = document.getElementById('runtime-api-key');
+    const sourceEl = document.getElementById('runtime-api-key-source');
+    if (keyEl) keyEl.textContent = NOT_AUTHENTICATED_TEXT;
+    if (sourceEl) sourceEl.textContent = NOT_AUTHENTICATED_TEXT;
   }
 }
 
-async function refreshApiAuthToken() {
-  const data = await apiGet('/api/settings/runtime');
-  apiAuthToken = data.api_auth_token || '';
-  return data;
+async function refreshApiKey() {
+  // Try to retrieve the API key from an existing session; silently ignore 401
+  // (user will need to enter the API key via the settings page login form).
+  try {
+    const data = await apiGet('/api/settings/runtime');
+    if (data.api_key) apiKey = data.api_key;
+  } catch (_) { /* not yet authenticated — ignore */ }
 }
 
 function libraryItemsPath(provider, libraryId) {
@@ -200,10 +311,30 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // Check auth state before proceeding — show login overlay if required.
+  // Default to auth required / unauthenticated so a /api/init network failure
+  // fails secure rather than granting unintended access.
+  let initData = { auth_required: true, authenticated: false, auth_mode: 'misconfigured' };
   try {
-    await refreshApiAuthToken();
+    const resp = await fetch('/api/init');
+    if (resp.ok) initData = await resp.json();
   } catch (err) {
-    console.error('Failed to load API auth token', err);
+    console.error('Failed to contact /api/init - showing login screen as a safe fallback:', err);
+  }
+
+  appAuthMode = initData.auth_mode || 'misconfigured';
+
+  if (initData.auth_required && !initData.authenticated) {
+    showLoginOverlay(appAuthMode);
+    // Startup and library loading happen in postLoginInit() after the user signs in.
+    return;
+  }
+
+  // Already authenticated (or auth disabled) — proceed with normal startup.
+  try {
+    await refreshApiKey();
+  } catch (err) {
+    console.error('Failed to load API key', err);
   }
   await waitForStartupHydration();
   loadLibraries();
@@ -368,6 +499,15 @@ async function selectLibrary(provider, id, title) {
   currentLibraryProvider = provider;
   currentLibraryId = id;
   activeFilter = 'all';
+  activeFilters = { theme: 'all', plex: false, themerrdb: false };
+  // Reset filter panel UI
+  const themeRadios = document.querySelectorAll('input[name="filter-theme"]');
+  themeRadios.forEach((r) => { r.checked = r.value === 'all'; });
+  const plexCheck = document.getElementById('filter-plex-avail');
+  const themerrdbCheck = document.getElementById('filter-themerrdb-avail');
+  if (plexCheck) plexCheck.checked = false;
+  if (themerrdbCheck) themerrdbCheck.checked = false;
+  updateFilterButtonState();
   const bulkBtn = document.getElementById('btn-bulk-download');
   if (bulkBtn) {
     bulkBtn.disabled = provider !== 'plex';
@@ -435,10 +575,16 @@ function renderItems(items) {
   const searchVal = (document.getElementById('search-input').value || '').toLowerCase();
   const filtered = items.filter((item) => {
     const matchSearch = !searchVal || item.title.toLowerCase().includes(searchVal);
-    let matchFilter = true;
-    if (activeFilter === 'has_theme') matchFilter = item.has_local_theme;
-    if (activeFilter === 'no_theme') matchFilter = !item.has_local_theme;
-    return matchSearch && matchFilter;
+    // Theme status filter
+    let themeOk = true;
+    if (activeFilters.theme === 'has_theme') themeOk = item.has_local_theme;
+    if (activeFilters.theme === 'no_theme') themeOk = !item.has_local_theme;
+    if (!themeOk) return false;
+    // Source availability filter (OR logic: show items matching at least one checked source)
+    if (!activeFilters.plex && !activeFilters.themerrdb) return matchSearch;
+    const sourceOk = (activeFilters.plex && item.has_plex_theme) ||
+                     (activeFilters.themerrdb && item.has_themerrdb_theme);
+    return matchSearch && sourceOk;
   });
 
   if (!filtered.length) {
@@ -535,20 +681,10 @@ function createItemCard(item) {
   const actions = document.createElement('div');
   actions.className = 'item-actions';
 
-  // Button order: Download from Plex → ThemerrDB → YouTube → Copy theme from → Upload → Delete
-  const downloadButton = createActionButton('action-btn action-btn-download', 'Download from Plex', BTN_PLEX[1]);
-  downloadButton.disabled = !item.has_plex_theme;
-  downloadButton.addEventListener('click', () => openDownloadModal(item));
-  actions.appendChild(downloadButton);
-
-  const themerrdbButton = createActionButton('action-btn action-btn-themerrdb', 'Download from ThemerrDB', BTN_THEMERRDB[1]);
-  themerrdbButton.disabled = !item.has_themerrdb_theme;
-  themerrdbButton.addEventListener('click', () => openThemerrdbModal(item));
-  actions.appendChild(themerrdbButton);
-
-  const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', BTN_YOUTUBE[1]);
-  youtubeButton.addEventListener('click', () => openYoutubeModal(item));
-  actions.appendChild(youtubeButton);
+  // Single "Get Theme" button with availability indicators
+  const getThemeBtn = createGetThemeButton(item, 'grid');
+  getThemeBtn.addEventListener('click', () => openGetThemeModal(item));
+  actions.appendChild(getThemeBtn);
 
   const copyButton = createActionButton('action-btn action-btn-copy', 'Copy theme from another item', BTN_COPY[1]);
   copyButton.addEventListener('click', () => openCopyThemeModal(item));
@@ -576,6 +712,38 @@ function createActionButton(className, title, html) {
   button.type = 'button';
   button.innerHTML = html;
   return button;
+}
+
+function createGetThemeButton(item, view) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'action-btn action-btn-get-theme';
+  btn.title = 'Get theme';
+
+  const labelSpan = document.createElement('span');
+  labelSpan.textContent = 'Get Theme';
+  btn.appendChild(labelSpan);
+
+  // Availability indicator images
+  const indicators = document.createElement('span');
+  indicators.className = 'get-theme-indicators';
+
+  const plexImg = document.createElement('img');
+  plexImg.src = 'https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/plex.svg';
+  plexImg.alt = '';
+  plexImg.className = 'get-theme-indicator' + (item.has_plex_theme ? '' : ' unavailable');
+  plexImg.title = item.has_plex_theme ? 'Plex theme available' : 'No Plex theme';
+  indicators.appendChild(plexImg);
+
+  const tdbImg = document.createElement('img');
+  tdbImg.src = 'https://app.lizardbyte.dev/ThemerrDB/assets/img/navbar-avatar.png';
+  tdbImg.alt = '';
+  tdbImg.className = 'get-theme-indicator' + (item.has_themerrdb_theme ? '' : ' unavailable');
+  tdbImg.title = item.has_themerrdb_theme ? 'ThemerrDB theme available' : 'No ThemerrDB theme';
+  indicators.appendChild(tdbImg);
+
+  btn.appendChild(indicators);
+  return btn;
 }
 
 function posterPlaceholder(type, title) {
@@ -665,29 +833,13 @@ function createItemRow(item) {
   }
   actionMenu.addEventListener('click', (e) => e.stopPropagation());
 
-  // Button order: Download from Plex → ThemerrDB → YouTube → Copy theme from → Upload → Delete
-  const downloadButton = createActionButton('action-btn action-btn-download', 'Download from Plex', BTN_PLEX[2]);
-  downloadButton.disabled = !item.has_plex_theme;
-  downloadButton.addEventListener('click', () => {
+  // Button order: Get Theme → Copy theme from → Upload → Delete
+  const getThemeBtn = createGetThemeButton(item, 'list');
+  getThemeBtn.addEventListener('click', () => {
     closeAllRowActionMenus();
-    openDownloadModal(item);
+    openGetThemeModal(item);
   });
-  actionMenu.appendChild(downloadButton);
-
-  const themerrdbButton = createActionButton('action-btn action-btn-themerrdb', 'Download from ThemerrDB', BTN_THEMERRDB[2]);
-  themerrdbButton.disabled = !item.has_themerrdb_theme;
-  themerrdbButton.addEventListener('click', () => {
-    closeAllRowActionMenus();
-    openThemerrdbModal(item);
-  });
-  actionMenu.appendChild(themerrdbButton);
-
-  const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', BTN_YOUTUBE[2]);
-  youtubeButton.addEventListener('click', () => {
-    closeAllRowActionMenus();
-    openYoutubeModal(item);
-  });
-  actionMenu.appendChild(youtubeButton);
+  actionMenu.appendChild(getThemeBtn);
 
   const copyButton = createActionButton('action-btn action-btn-copy', 'Copy theme from another item', BTN_COPY[2]);
   copyButton.addEventListener('click', () => {
@@ -973,13 +1125,114 @@ async function executeBulkDownload(overwrite) {
 // ============================================================
 function setFilter(filter) {
   activeFilter = filter;
-  document.querySelectorAll('.filter-buttons .btn').forEach((button) => button.classList.remove('active'));
-  document.getElementById(`filter-${filter.replace(/_/g, '-')}`).classList.add('active');
+  activeFilters.theme = filter;
   renderItems(currentItems);
+}
+
+function applyFilters() {
+  const themeRadio = document.querySelector('input[name="filter-theme"]:checked');
+  activeFilters.theme = themeRadio ? themeRadio.value : 'all';
+  activeFilter = activeFilters.theme;
+  const plexCheck = document.getElementById('filter-plex-avail');
+  const tdbCheck = document.getElementById('filter-themerrdb-avail');
+  activeFilters.plex = plexCheck ? plexCheck.checked : false;
+  activeFilters.themerrdb = tdbCheck ? tdbCheck.checked : false;
+  updateFilterButtonState();
+  renderItems(currentItems);
+}
+
+function toggleFilterPanel(event) {
+  event.stopPropagation();
+  const panel = document.getElementById('filter-panel');
+  const btn = document.getElementById('filter-icon-btn');
+  const isOpen = !panel.classList.contains('hidden');
+  if (isOpen) {
+    panel.classList.add('hidden');
+    btn.setAttribute('aria-expanded', 'false');
+  } else {
+    panel.classList.remove('hidden');
+    btn.setAttribute('aria-expanded', 'true');
+  }
+}
+
+function clearFilters() {
+  const themeRadios = document.querySelectorAll('input[name="filter-theme"]');
+  themeRadios.forEach((r) => { r.checked = r.value === 'all'; });
+  const plexCheck = document.getElementById('filter-plex-avail');
+  const tdbCheck = document.getElementById('filter-themerrdb-avail');
+  if (plexCheck) plexCheck.checked = false;
+  if (tdbCheck) tdbCheck.checked = false;
+  applyFilters();
+}
+
+function updateFilterButtonState() {
+  const btn = document.getElementById('filter-icon-btn');
+  const badge = document.getElementById('filter-active-badge');
+  if (!btn || !badge) return;
+  let activeCount = 0;
+  if (activeFilters.theme !== 'all') activeCount++;
+  if (activeFilters.plex) activeCount++;
+  if (activeFilters.themerrdb) activeCount++;
+  if (activeCount > 0) {
+    btn.classList.add('filter-active');
+    badge.textContent = activeCount;
+    badge.classList.remove('hidden');
+  } else {
+    btn.classList.remove('filter-active');
+    badge.classList.add('hidden');
+  }
 }
 
 function filterItems() {
   renderItems(currentItems);
+}
+
+// Close filter panel when clicking outside
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('filter-panel');
+  const wrapper = document.querySelector('.filter-wrapper');
+  if (panel && wrapper && !wrapper.contains(e.target) && !panel.classList.contains('hidden')) {
+    panel.classList.add('hidden');
+    const btn = document.getElementById('filter-icon-btn');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+});
+
+// ============================================================
+// Get Theme Modal (source selection)
+// ============================================================
+function openGetThemeModal(item) {
+  activeItemContext = { provider: item.provider || 'plex', id: String(item.id || item.ratingKey), item };
+
+  // Configure source buttons based on availability
+  const plexBtn = document.getElementById('get-theme-btn-plex');
+  const tdbBtn = document.getElementById('get-theme-btn-themerrdb');
+  const plexStatus = document.getElementById('get-theme-plex-status');
+  const tdbStatus = document.getElementById('get-theme-themerrdb-status');
+
+  if (plexBtn) {
+    plexBtn.disabled = !item.has_plex_theme;
+    if (plexStatus) plexStatus.textContent = item.has_plex_theme ? 'Theme available' : 'Not available';
+  }
+  if (tdbBtn) {
+    tdbBtn.disabled = !item.has_themerrdb_theme;
+    if (tdbStatus) tdbStatus.textContent = item.has_themerrdb_theme ? 'Theme available' : 'Not available';
+  }
+
+  openModal('modal-get-theme');
+}
+
+function getThemeSelectSource(source) {
+  closeModal('modal-get-theme');
+  const item = activeItemContext && activeItemContext.item;
+  if (!item) return;
+  if (source === 'plex') {
+    openDownloadModal(item);
+  } else if (source === 'themerrdb') {
+    openThemerrdbModal(item);
+  } else if (source === 'youtube') {
+    openYoutubeModal(item);
+  }
 }
 
 // ============================================================
@@ -1827,7 +2080,7 @@ async function apiFormPost(url, formData) {
 
 function buildApiHeaders(extraHeaders = {}) {
   const headers = { ...extraHeaders };
-  if (apiAuthToken) headers['X-Themarr-Api-Key'] = apiAuthToken;
+  if (apiKey) headers['X-Themarr-Api-Key'] = apiKey;
   return headers;
 }
 

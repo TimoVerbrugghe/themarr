@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import tempfile
@@ -17,9 +18,29 @@ from urllib.parse import urlparse
 
 import requests as http_requests
 import yt_dlp
-from flask import Flask, Response, jsonify, render_template, request, send_file
-from plexapi.server import PlexServer
-from werkzeug.utils import safe_join
+from flask import Flask, Response, jsonify, render_template, request, send_file, session
+
+from app.media_utils import (
+    MAX_UPLOAD_BYTES, ALLOWED_UPLOAD_TYPES, VIDEO_FILE_EXTENSIONS,
+    _is_video_file_path, _configured_media_roots, _is_within_root,
+    _validate_local_media_path, _theme_file_path, scan_local_theme_dirs,
+)
+from app.external_ids import (
+    _normalize_external_id, extract_external_ids, extract_jellyfin_external_ids,
+)
+from app.youtube_utils import (
+    ALLOWED_YOUTUBE_HOSTS, MAX_YOUTUBE_DURATION_SECONDS,
+    is_valid_youtube_url, youtube_match_filter, _youtube_retry_profiles,
+    _youtube_preview_ydl_opts, _youtube_download_ydl_opts,
+    _clean_yt_dlp_error, _stream_http_response_chunks,
+)
+from app.plex_utils import (
+    get_plex, plex_session_get, get_section_base_paths,
+    get_item_local_path, get_validated_plex_local_path,
+)
+from app.jellyfin_utils import (
+    jellyfin_is_configured, get_jellyfin, get_jellyfin_item_local_path, _normalize_provider,
+)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -27,19 +48,11 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 YTDLP_WORKDIR = Path(tempfile.gettempdir()) / 'themarr_yt_dlp_work'
 YTDLP_WORKDIR.mkdir(parents=True, exist_ok=True)
-MAX_UPLOAD_BYTES = 25 * 1024 * 1024
-MAX_YOUTUBE_DURATION_SECONDS = 15 * 60
 MAX_BULK_ITEMS = 100
 ASSET_VERSION = str(int(time.time()))
 PLEX_RETRY_ATTEMPTS_DEFAULT = 10
 PLEX_RETRY_DELAY_DEFAULT = 30  # seconds between retry attempts
 JELLYFIN_TIMEOUT_SECONDS = 30
-ALLOWED_UPLOAD_TYPES = {'audio/mpeg', 'audio/mp3', 'application/octet-stream'}
-ALLOWED_YOUTUBE_HOSTS = {'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'}
-VIDEO_FILE_EXTENSIONS = {
-    '.3gp', '.asf', '.avi', '.divx', '.flv', '.iso', '.m2ts', '.m4v', '.mkv',
-    '.mov', '.mp4', '.mpeg', '.mpg', '.mts', '.ts', '.vob', '.webm', '.wmv',
-}
 THEMERRDB_API_BASE = 'https://app.lizardbyte.dev/ThemerrDB'
 THEMERRDB_CACHE_TTL = 24 * 3600  # 24 hours
 LIBRARY_PAGE_SIZE_DEFAULT = 200
@@ -51,6 +64,25 @@ BACKGROUND_WORKER_COUNT = BACKGROUND_WORKER_COUNT_DEFAULT
 LIBRARY_PAGE_SIZE = LIBRARY_PAGE_SIZE_DEFAULT
 LIBRARY_PAGE_SIZE_MAX_VALUE = LIBRARY_PAGE_SIZE_MAX
 app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_BYTES
+# Flask session: use env-provided key for cross-restart persistence, otherwise
+# generate one per process (sessions invalidate on restart – acceptable for a
+# home-server app where the API key also rotates on restart when auto-generated).
+app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY') or secrets.token_hex(32)
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+if not os.getenv('FLASK_SECRET_KEY'):
+    logger.warning(
+        'FLASK_SECRET_KEY is not set; a one-time session key was generated. '
+        'Browser sessions will be invalidated on every container restart. '
+        'Set FLASK_SECRET_KEY to a stable random value for persistent sessions.'
+    )
+
+# Allowed CDN hosts for yt-dlp resolved audio stream proxying (SSRF guard).
+# yt-dlp returns googlevideo.com URLs for YouTube streams under normal operation.
+_ALLOWED_AUDIO_STREAM_HOSTS = {'googlevideo.com', 'youtube.com', 'googleusercontent.com'}
+
+# Pattern for validating ThemerrDB / external media database IDs before interpolation.
+_EXTERNAL_ID_RE = re.compile(r'^[A-Za-z0-9_\-]{1,64}$')
 
 # In-memory cache for library items, warmed at startup to make first page loads instant.
 _library_cache: dict = {}        # {section_id: [item_dict, ...]}
@@ -79,12 +111,80 @@ _cache_warmup_future = None
 _poster_warmup_future = None
 _startup_warmup_started = False
 _startup_warmup_lock = threading.Lock()
-_generated_api_auth_token = secrets.token_urlsafe(32)
-if not (os.getenv('API_AUTH_TOKEN') or '').strip():
+_generated_api_key = secrets.token_urlsafe(32)
+
+
+def _log_generated_api_key_warning():
+    """Warn when using an auto-generated API key without logging the secret."""
     logger.warning(
-        'API_AUTH_TOKEN is not set; generated startup token: %s',
-        _generated_api_auth_token,
+        'API_KEY is not set; a one-time startup API key was generated. '
+        'Open the Settings page in the web app after signing in to view it, '
+        'or set API_KEY to a stable value to avoid rotation on restart.',
     )
+
+
+if not (os.getenv('API_KEY') or '').strip():
+    _log_generated_api_key_warning()
+
+
+def _auth_disabled():
+    """Return True when DISABLE_AUTH=true (authentication bypass mode)."""
+    return (os.getenv('DISABLE_AUTH') or '').strip().lower() in {'true', '1', 'yes'}
+
+
+def _get_ui_credentials():
+    """Return (username, password) from AUTH_USERNAME / AUTH_PASSWORD env vars."""
+    username = (os.getenv('AUTH_USERNAME') or '').strip()
+    password = (os.getenv('AUTH_PASSWORD') or '').strip()
+    return username, password
+
+
+def _credentials_auth_configured():
+    """Return True when both AUTH_USERNAME and AUTH_PASSWORD are set."""
+    username, password = _get_ui_credentials()
+    return bool(username and password)
+
+
+def _ui_auth_misconfigured():
+    """Return True when UI auth is enabled but credentials are missing."""
+    return not _auth_disabled() and not _credentials_auth_configured()
+
+
+def _ui_auth_warning_message():
+    """Return warning text shown when UI auth credentials are not configured."""
+    return (
+        'Web UI authentication is enabled but AUTH_USERNAME/AUTH_PASSWORD are not both set. '
+        'Set both variables, or set DISABLE_AUTH=true only when a trusted reverse proxy already enforces authentication.'
+    )
+
+
+def _get_auth_mode():
+    """Return the active authentication mode string.
+
+    Returns:
+        'disabled'      – DISABLE_AUTH=true; no credentials required.
+        'credentials'   – AUTH_USERNAME + AUTH_PASSWORD are both set; login form shown.
+        'misconfigured' – UI auth enabled but credentials are missing.
+    """
+    if _auth_disabled():
+        return 'disabled'
+    if _credentials_auth_configured():
+        return 'credentials'
+    return 'misconfigured'
+
+
+# Log the active auth mode at startup.
+_startup_auth_mode = _get_auth_mode()
+if _startup_auth_mode == 'disabled':
+    logger.warning(
+        'DISABLE_AUTH is set — all UI authentication is bypassed. '
+        'Only use this when a trusted reverse proxy handles authentication.'
+    )
+elif _startup_auth_mode == 'credentials':
+    logger.info('Auth mode: username/password credentials (AUTH_USERNAME + AUTH_PASSWORD).')
+else:
+    logger.warning('Auth mode: misconfigured. %s', _ui_auth_warning_message())
+
 
 def error_response(message, status_code=500, exc=None):
     """Return a safe JSON error response while logging internal details."""
@@ -95,30 +195,39 @@ def error_response(message, status_code=500, exc=None):
     return jsonify({'error': message}), status_code
 
 
-def _parse_auth_token():
-    """Extract API token from supported auth headers."""
-    header_token = (request.headers.get('X-Themarr-Api-Key') or '').strip()
-    if header_token:
-        return header_token
+def _parse_api_key():
+    """Extract API key from supported auth headers."""
+    header_key = (request.headers.get('X-Themarr-Api-Key') or '').strip()
+    if header_key:
+        return header_key
     auth_header = (request.headers.get('Authorization') or '').strip()
     if auth_header.startswith('Bearer '):
         return auth_header[7:].strip()
     return ''
 
 
-def _get_api_auth_token():
-    """Return configured API token or generated fallback token."""
-    configured_token = (os.getenv('API_AUTH_TOKEN') or '').strip()
-    if configured_token:
-        return configured_token, False
-    return _generated_api_auth_token, True
+def _get_api_key():
+    """Return configured API key or generated fallback key."""
+    configured_key = (os.getenv('API_KEY') or '').strip()
+    if configured_key:
+        return configured_key, False
+    return _generated_api_key, True
 
 
 def _check_api_request_auth():
-    """Validate API auth token for mutating API routes."""
-    expected_token, _ = _get_api_auth_token()
-    provided_token = _parse_auth_token()
-    if provided_token and hmac.compare_digest(provided_token, expected_token):
+    """Validate API key auth for protected API routes.
+
+    Accepts either a valid Flask session (established via POST /api/auth/login)
+    or the API key supplied in the X-Themarr-Api-Key / Authorization header.
+    When DISABLE_AUTH=true, all requests are allowed without credentials.
+    """
+    if _auth_disabled():
+        return None
+    if session.get('authenticated'):
+        return None
+    expected_key, _ = _get_api_key()
+    provided_key = _parse_api_key()
+    if provided_key and hmac.compare_digest(provided_key, expected_key):
         return None
     return jsonify({'error': 'Unauthorized API request'}), 401
 
@@ -128,6 +237,16 @@ def _check_webhook_basic_auth():
     expected_username = (os.getenv('WEBHOOK_USERNAME') or '').strip()
     expected_password = (os.getenv('WEBHOOK_PASSWORD') or '').strip()
     if not expected_username and not expected_password:
+        return None
+    if not expected_username or not expected_password:
+        # Partial configuration: only one credential is set, which would allow
+        # authentication with an empty counterpart.  Treat as misconfigured and
+        # skip auth rather than silently accepting requests with a half-check.
+        logger.warning(
+            'Webhook Basic Auth is partially configured (only one of '
+            'WEBHOOK_USERNAME / WEBHOOK_PASSWORD is set); authentication skipped. '
+            'Set both variables to enable webhook Basic Auth.'
+        )
         return None
     auth = request.authorization
     if not auth:
@@ -223,44 +342,11 @@ def _ensure_startup_warmup():
     _kick_off_cache_warmup()
 
 
-def get_plex():
-    """Get authenticated PlexServer instance from environment variables."""
-    plex_url = os.getenv('PLEX_URL')
-    plex_token = os.getenv('PLEX_TOKEN')
-    if not plex_url or not plex_token:
-        raise ValueError('PLEX_URL and PLEX_TOKEN environment variables must be set')
-    return PlexServer(plex_url.rstrip('/'), plex_token)
-
-
-def jellyfin_is_configured():
-    """Return True when Jellyfin credentials are configured."""
-    jellyfin_url = (os.getenv('JELLYFIN_URL') or '').strip()
-    jellyfin_api_key = (os.getenv('JELLYFIN_API_KEY') or '').strip()
-    return bool(jellyfin_url and jellyfin_api_key)
-
-
-def get_jellyfin():
-    """Get Jellyfin connection settings from environment variables."""
-    jellyfin_url = (os.getenv('JELLYFIN_URL') or '').strip()
-    jellyfin_api_key = (os.getenv('JELLYFIN_API_KEY') or '').strip()
-    jellyfin_user_id = (os.getenv('JELLYFIN_USER_ID') or '').strip() or None
-    if not jellyfin_url or not jellyfin_api_key:
-        raise ValueError('JELLYFIN_URL and JELLYFIN_API_KEY environment variables must be set')
-    return {
-        'url': jellyfin_url.rstrip('/'),
-        'api_key': jellyfin_api_key,
-        'user_id': jellyfin_user_id,
-    }
-
-
 def jellyfin_session_get(jellyfin, path, **kwargs):
     """Perform an authenticated GET against Jellyfin."""
     headers = dict(kwargs.pop('headers', {}) or {})
     headers['X-Emby-Token'] = jellyfin['api_key']
-    if path.startswith('http://') or path.startswith('https://'):
-        url = path
-    else:
-        url = f"{jellyfin['url']}{path}"
+    url = f"{jellyfin['url']}{path}"
     return http_requests.get(url, headers=headers, timeout=JELLYFIN_TIMEOUT_SECONDS, **kwargs)
 
 
@@ -268,10 +354,7 @@ def jellyfin_session_post(jellyfin, path, **kwargs):
     """Perform an authenticated POST against Jellyfin."""
     headers = dict(kwargs.pop('headers', {}) or {})
     headers['X-Emby-Token'] = jellyfin['api_key']
-    if path.startswith('http://') or path.startswith('https://'):
-        url = path
-    else:
-        url = f"{jellyfin['url']}{path}"
+    url = f"{jellyfin['url']}{path}"
     return http_requests.post(url, headers=headers, timeout=JELLYFIN_TIMEOUT_SECONDS, **kwargs)
 
 
@@ -298,83 +381,6 @@ def get_jellyfin_user_id(jellyfin):
 
         _jellyfin_user_id_cache['value'] = user_id
         return user_id
-
-
-def get_jellyfin_item_local_path(item):
-    """Get local filesystem path for a Jellyfin item dict."""
-    raw_path = item.get('Path')
-    if not raw_path:
-        return None
-    candidate = Path(raw_path)
-    item_type = (item.get('Type') or '').lower()
-    if item_type == 'movie' and _is_video_file_path(candidate):
-        return candidate.parent
-    return candidate
-
-
-def _is_video_file_path(path):
-    """Return True when a path appears to reference a video file."""
-    return path.suffix.lower() in VIDEO_FILE_EXTENSIONS
-
-
-def _configured_media_roots():
-    """Return configured media root paths used to constrain filesystem operations."""
-    roots = []
-    for env_name in ('TV_SHOWS_HOST_PATH', 'MOVIES_HOST_PATH'):
-        raw_value = (os.getenv(env_name) or '').strip()
-        if not raw_value:
-            continue
-        try:
-            roots.append(Path(raw_value).resolve(strict=False))
-        except OSError:
-            logger.warning('Ignoring invalid %s path configuration', env_name)
-    return roots
-
-
-def _is_within_root(path, root):
-    """Return True when *path* is at or below *root*."""
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
-
-
-def _validate_local_media_path(local_path):
-    """Normalize and validate local media path for safe filesystem usage."""
-    if local_path is None:
-        return None
-
-    local_path_str = str(local_path)
-    sanitized = safe_join('/', local_path_str.lstrip('/'))
-    if sanitized is None:
-        raise ValueError('Invalid local media path')
-
-    normalized = os.path.normpath(sanitized)
-    if not normalized.startswith('/'):
-        raise ValueError('Invalid local media path')
-
-    roots = _configured_media_roots()
-    normalized_path = Path(normalized)
-    if roots and not any(_is_within_root(normalized_path, root) for root in roots):
-        raise ValueError('Item path is outside configured media roots')
-
-    return normalized_path
-
-
-def _theme_file_path(local_path):
-    """Return validated theme file path for a validated media directory."""
-    validated_local_path = _validate_local_media_path(local_path)
-    if not validated_local_path:
-        return None
-    return validated_local_path / 'theme.mp3'
-
-
-def _normalize_provider(provider):
-    normalized = (provider or '').strip().lower()
-    if normalized not in {'plex', 'jellyfin'}:
-        raise ValueError('provider must be either "plex" or "jellyfin"')
-    return normalized
 
 
 def _serialize_jellyfin_item(item, library_id, theme_dirs=None):
@@ -500,58 +506,10 @@ def _get_item_context(provider, item_id):
         'local_path': local_path,
         'has_plex_theme': False,
     }
-def plex_session_get(plex, url, **kwargs):
-    """Fetch Plex media using plexapi's authenticated session."""
-    # plexapi does not expose a higher-level helper for arbitrary media proxying,
-    # so these web endpoints intentionally reuse its authenticated requests session.
-    return plex._session.get(url, **kwargs)
-
-
-def extract_external_ids(item):
-    """Extract external IDs (IMDB/TVDB) from Plex item guids.
-    
-    Returns dict with 'imdb' and 'tvdb' keys (None if not found).
-    """
-    ids = {'imdb': None, 'tvdb': None, 'tmdb': None}
-    for guid in getattr(item, 'guids', []):
-        if isinstance(guid, dict):
-            guid_id = guid.get('id', '')
-        else:
-            guid_id = getattr(guid, 'id', '') or ''
-        if guid_id.startswith('imdb://'):
-            ids['imdb'] = guid_id.replace('imdb://', '')
-        elif guid_id.startswith('tmdb://'):
-            ids['tmdb'] = guid_id.replace('tmdb://', '')
-        elif guid_id.startswith('tvdb://'):
-            ids['tvdb'] = guid_id.replace('tvdb://', '')
-    return ids
-
-
-def _normalize_external_id(value):
-    """Normalize provider ID values to a stripped string or None."""
-    if isinstance(value, (list, tuple)):
-        value = value[0] if value else None
-    if value is None:
-        return None
-    value = str(value).strip()
-    return value or None
-
-
-def extract_jellyfin_external_ids(item):
-    """Extract external IDs (IMDB/TMDB/TVDB) from a Jellyfin item dict."""
-    provider_ids = item.get('ProviderIds') if isinstance(item, dict) else {}
-    provider_ids = provider_ids if isinstance(provider_ids, dict) else {}
-    return {
-        'imdb': _normalize_external_id(provider_ids.get('Imdb')),
-        'tmdb': _normalize_external_id(provider_ids.get('Tmdb')),
-        'tvdb': _normalize_external_id(provider_ids.get('Tvdb')),
-    }
-
-
 def get_themerrdb_theme_for_external_ids(item_type, external_ids):
     """Resolve ThemerrDB theme metadata from external IDs for a media type."""
     themerr_item_type = 'tv_shows' if item_type == 'show' else 'movies'
-    tmdb_id = external_ids.get('tmdb') or external_ids.get('tvdb')
+    tmdb_id = external_ids.get('tmdb')
     cache_ids = {
         external_ids.get('imdb'),
         external_ids.get('tmdb'),
@@ -618,7 +576,13 @@ def query_themerrdb(item_type, database, external_id):
     """
     if not external_id:
         return None
-    
+
+    # Validate the external ID before interpolating it into a URL to prevent
+    # path traversal or header injection via a compromised upstream metadata source.
+    if not _EXTERNAL_ID_RE.match(str(external_id)):
+        logger.warning('Rejecting malformed ThemerrDB external_id (value redacted)')
+        return None
+
     # Check cache first
     cache_hit, cached = _get_cached_themerrdb(external_id)
     if cache_hit:
@@ -726,171 +690,6 @@ def _check_plex_preview_availability(item):
         return {'available': False, 'reason': 'Unable to stream the Plex preview right now.'}
 
 
-def scan_local_theme_dirs(base_paths):
-    """Scan base directories and return a dict mapping directory path -> theme.mp3 size.
-
-    Supports both library root paths and item-directory paths as scan inputs.
-    This keeps callers fast while allowing mixed cache hydration strategies.
-    """
-    theme_dirs = {}
-    for base in base_paths:
-        try:
-            base_path = Path(base)
-            direct_theme = base_path / 'theme.mp3'
-            if direct_theme.is_file():
-                size = direct_theme.stat().st_size
-                if size > 0:
-                    theme_dirs[str(base_path)] = size
-
-            for p in base_path.glob('*/theme.mp3'):
-                try:
-                    size = p.stat().st_size
-                    if size > 0:
-                        theme_dirs[str(p.parent)] = size
-                except OSError:
-                    pass
-        except Exception:
-            pass
-    return theme_dirs
-
-
-def get_section_base_paths(plex):
-    """Return the unique set of root directory paths for all show/movie sections.
-
-    Uses Plex's reported ``locations`` for each section so we don't need any
-    path-related environment variables — the caller must mount library paths at
-    the same container path as the Plex container.
-    """
-    paths = set()
-    try:
-        for section in plex.library.sections():
-            if section.type in ('show', 'movie'):
-                for loc in section.locations:
-                    paths.add(loc)
-    except Exception:
-        pass
-    return paths
-
-
-def get_item_local_path(item):
-    """Get the local filesystem path for a Plex library item.
-
-    Uses the path reported by Plex directly — this works when the container
-    mounts the same library paths at the same locations as the Plex container.
-    """
-    if not hasattr(item, 'locations') or not item.locations:
-        return None
-
-    for loc in item.locations:
-        candidate = Path(loc)
-        if item.type == 'show':
-            # Avoid filesystem stat calls here (especially on NFS). Plex already
-            # gives us the canonical library path; we use it directly.
-            return candidate
-        if item.type == 'movie':
-            # Movie locations may be either file paths or folder paths.
-            return candidate.parent if _is_video_file_path(candidate) else candidate
-
-    return None
-
-
-def get_validated_plex_local_path(item):
-    """Get and validate local filesystem path for a Plex library item."""
-    local_path = get_item_local_path(item)
-    if not local_path:
-        return None
-    return _validate_local_media_path(local_path)
-
-
-def is_valid_youtube_url(url):
-    """Validate that a URL points to a supported YouTube host."""
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return False
-
-    if parsed.scheme not in {'http', 'https'}:
-        return False
-
-    hostname = (parsed.hostname or '').lower()
-    return hostname in ALLOWED_YOUTUBE_HOSTS
-
-
-
-
-def youtube_match_filter(info_dict, *, incomplete):
-    """Reject overly long videos before downloading."""
-    duration = info_dict.get('duration')
-    if duration and duration > MAX_YOUTUBE_DURATION_SECONDS:
-        return f'Video exceeds {MAX_YOUTUBE_DURATION_SECONDS} seconds'
-    return None
-
-
-def _youtube_retry_profiles():
-    """Yield yt-dlp retry profiles for videos with client-specific availability."""
-    return [
-        ('default', {}),
-        ('android', {'extractor_args': {'youtube': {'player_client': ['android']}}}),
-    ]
-
-
-def _youtube_preview_ydl_opts(profile_overrides=None):
-    """Build yt-dlp options for extracting a preview audio stream URL."""
-    opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
-        'skip_download': True,
-        'socket_timeout': 30,
-        'js_runtimes': {'node': {}},
-        'remote_components': ['ejs:github'],
-    }
-    if profile_overrides:
-        opts.update(profile_overrides)
-    return opts
-
-
-def _youtube_download_ydl_opts(tmpdir, profile_overrides=None):
-    """Build yt-dlp options for downloading and converting a theme MP3."""
-    opts = {
-        'format': 'bestaudio/best',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-        'outtmpl': os.path.join(tmpdir, 'theme.%(ext)s'),
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
-        'match_filter': youtube_match_filter,
-        'max_filesize': MAX_UPLOAD_BYTES,
-        'js_runtimes': {'node': {}},
-        'remote_components': ['ejs:github'],
-    }
-    if profile_overrides:
-        opts.update(profile_overrides)
-    return opts
-
-
-def _clean_yt_dlp_error(exc):
-    """Normalize yt-dlp error messages for user-facing responses."""
-    return str(exc).removeprefix('ERROR: ').strip()
-
-
-def _stream_http_response_chunks(response, *, chunk_size=8192):
-    """Yield streamed HTTP response chunks while handling client disconnects."""
-    try:
-        for chunk in response.iter_content(chunk_size=chunk_size):
-            if chunk:
-                yield chunk
-    except (http_requests.exceptions.ChunkedEncodingError, http_requests.exceptions.ConnectionError, BrokenPipeError, ConnectionResetError) as exc:
-        logger.info('Stream interrupted while sending preview audio: %s', exc)
-    finally:
-        response.close()
-
-
 def _extract_youtube_audio_url(youtube_url):
     """Resolve a direct audio stream URL for a YouTube video with retries."""
     errors = []
@@ -905,6 +704,25 @@ def _extract_youtube_audio_url(youtube_url):
         except yt_dlp.utils.DownloadError as exc:
             errors.append(f'{profile_name}: {_clean_yt_dlp_error(exc)}')
     raise yt_dlp.utils.DownloadError(' | '.join(errors))
+
+
+def _is_valid_audio_stream_url(url):
+    """Return True when a yt-dlp resolved stream URL is from an allowed CDN host.
+
+    This guards against SSRF: yt-dlp should only return googlevideo.com (or
+    similar Google CDN) URLs for YouTube content.  Any other host is rejected.
+    """
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in {'https', 'http'}:
+            return False
+        hostname = (parsed.hostname or '').lower()
+        return any(
+            hostname == h or hostname.endswith('.' + h)
+            for h in _ALLOWED_AUDIO_STREAM_HOSTS
+        )
+    except ValueError:
+        return False
 
 
 def _download_youtube_theme_mp3(youtube_url, tmpdir):
@@ -932,8 +750,8 @@ def is_valid_upload(upload_file):
         return False, ('Only MP3 uploads are supported', 400)
 
     content_type = (upload_file.content_type or '').lower()
-    if content_type and content_type not in ALLOWED_UPLOAD_TYPES:
-        return False, ('Uploaded file must be an MP3', 400)
+    if not content_type or content_type not in ALLOWED_UPLOAD_TYPES:
+        return False, ('Uploaded file must be an MP3 (audio/mpeg)', 400)
 
     return True, None
 
@@ -1041,7 +859,7 @@ def item_to_dict(item, theme_dirs=None, provider='plex', library_id=None):
     # Extract external IDs for ThemerrDB availability check
     external_ids = extract_external_ids(item)
     has_themerrdb_theme = False
-    if external_ids['imdb'] or external_ids['tvdb']:
+    if external_ids['imdb'] or external_ids['tvdb'] or external_ids['tmdb']:
         themerrdb_data = get_themerrdb_theme(item)
         has_themerrdb_theme = themerrdb_data is not None
 
@@ -1323,17 +1141,28 @@ def _kick_off_poster_cache_warmup():
 
 def _sync_cached_item(item):
     """Update an item's cached entry in-place after local theme state changes."""
-    updated_item = item_to_dict(item)
     updated = False
+    updated_item = None
     with _library_cache_lock:
         for section_items in _library_cache.values():
             for index, cached_item in enumerate(section_items):
                 if str(cached_item.get('ratingKey')) == str(item.ratingKey):
+                    # Preserve library_id and provider from the existing cached entry
+                    # so that _sync_cached_item never overwrites them with None defaults.
+                    existing_library_id = cached_item.get('library_id')
+                    existing_provider = cached_item.get('provider') or 'plex'
+                    updated_item = item_to_dict(
+                        item,
+                        provider=existing_provider,
+                        library_id=existing_library_id,
+                    )
                     section_items[index] = updated_item
                     updated = True
                     break
             if updated:
                 break
+    if updated_item is None:
+        updated_item = item_to_dict(item)
     return updated_item, updated
 
 
@@ -1455,7 +1284,15 @@ def _warm_library_cache():
                         path = Path(local_path)
                         base_paths.add(str(path.parent if _is_video_file_path(path) else path))
 
-                    theme_dirs = scan_local_theme_dirs(base_paths) if base_paths else {}
+                # Perform filesystem I/O outside the cache lock to avoid blocking
+                # concurrent cache readers while scanning potentially slow mounts.
+                theme_dirs = scan_local_theme_dirs(base_paths) if base_paths else {}
+
+                with _library_cache_lock:
+                    # Re-read cached_items in case it was replaced between releases.
+                    cached_items = _library_cache.get(cache_key)
+                    if cached_items is None:
+                        return
                     updated_items = []
                     for cached_item in cached_items:
                         updated_item = dict(cached_item)
@@ -1513,11 +1350,16 @@ def index():
     default_view = os.getenv('DEFAULT_VIEW', 'list').strip().lower()
     if default_view not in ('list', 'grid'):
         default_view = 'list'
+    ui_auth_misconfigured = _ui_auth_misconfigured()
+    if ui_auth_misconfigured:
+        logger.warning('UI auth misconfiguration: %s', _ui_auth_warning_message())
     return render_template(
         'index.html',
         default_theme=default_theme,
         default_view=default_view,
         asset_version=ASSET_VERSION,
+        ui_auth_misconfigured=ui_auth_misconfigured,
+        ui_auth_warning_message=_ui_auth_warning_message(),
     )
 
 
@@ -1527,13 +1369,83 @@ def health():
     return jsonify({'status': 'healthy'}), 200
 
 
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login():
+    """Validate credentials and establish a server-side session.
+
+    Accepts username/password when AUTH_USERNAME + AUTH_PASSWORD are set.
+    On success the browser receives an httpOnly session cookie; credentials are
+    never stored client-side.
+    """
+    data = request.get_json(silent=True) or {}
+    auth_mode = _get_auth_mode()
+
+    if auth_mode == 'disabled':
+        # Auth is disabled — establish a session anyway so downstream
+        # session.get('authenticated') checks remain consistent.
+        session.clear()
+        session['authenticated'] = True
+        return jsonify({'ok': True, 'auth_mode': 'disabled'})
+
+    if auth_mode == 'credentials':
+        provided_username = (data.get('username') or '').strip()
+        provided_password = (data.get('password') or '').strip()
+        expected_username, expected_password = _get_ui_credentials()
+        if not provided_username or not provided_password:
+            return jsonify({'error': 'Invalid username or password'}), 401
+        if len(provided_username) > 256 or len(provided_password) > 4096:
+            return jsonify({'error': 'Invalid username or password'}), 401
+        username_ok = hmac.compare_digest(provided_username, expected_username)
+        password_ok = hmac.compare_digest(provided_password, expected_password)
+        if not (username_ok and password_ok):
+            return jsonify({'error': 'Invalid username or password'}), 401
+        session.clear()
+        session['authenticated'] = True
+        return jsonify({'ok': True, 'auth_mode': 'credentials'})
+
+    return jsonify({'error': 'UI auth is misconfigured. Set AUTH_USERNAME and AUTH_PASSWORD.'}), 503
+
+
+@app.route('/api/auth/logout', methods=['POST'])
+def auth_logout():
+    """Clear the server-side session."""
+    session.clear()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/init')
+def api_init():
+    """Return auth state for the UI on initial page load.
+
+    This endpoint is always public — no credentials required — so the frontend
+    can decide whether to show the login screen before making any other requests.
+    """
+    auth_mode = _get_auth_mode()
+    disable_auth = auth_mode == 'disabled'
+    auth_misconfigured = auth_mode == 'misconfigured'
+    authenticated = disable_auth or (auth_mode == 'credentials' and session.get('authenticated', False))
+    return jsonify({
+        'auth_required': not disable_auth and not auth_misconfigured,
+        'authenticated': authenticated,
+        'auth_mode': auth_mode,
+        'auth_misconfigured': auth_misconfigured,
+        'warning': _ui_auth_warning_message() if auth_misconfigured else None,
+    })
+
+
 @app.route('/api/settings/runtime')
 def get_settings_runtime():
-    """Expose runtime settings needed by the UI settings page."""
-    token, is_generated = _get_api_auth_token()
+    """Return runtime settings for the UI settings page.
+
+    This endpoint requires authentication (session cookie or API key header).
+    The actual API key is returned so the settings page can display it; it is
+    safe to do so because the caller is already authenticated.
+    """
+    actual_key, is_generated = _get_api_key()
     return jsonify({
-        'api_auth_token': token,
-        'api_auth_token_generated': is_generated,
+        'api_key': actual_key,
+        'api_key_configured': not is_generated,
+        'api_key_generated': is_generated,
         'background_worker_count': BACKGROUND_WORKER_COUNT,
         'library_page_size': LIBRARY_PAGE_SIZE,
         'library_page_size_max': LIBRARY_PAGE_SIZE_MAX_VALUE,
@@ -1542,16 +1454,21 @@ def get_settings_runtime():
 
 
 @app.before_request
-def enforce_mutating_api_auth():
-    """Protect mutating API endpoints with token auth."""
+def enforce_api_auth():
+    """Protect API endpoints with API key or session auth."""
     _ensure_startup_warmup()
-    if request.method not in {'POST', 'PUT', 'PATCH', 'DELETE'}:
-        return None
     if not request.path.startswith('/api/'):
         return None
+    if request.path in {'/api/auth/login', '/api/init'}:
+        return None  # Always public
     if request.path == '/api/webhooks/plex':
-        return None
-    return _check_api_request_auth()
+        return None  # Webhook uses its own Basic Auth
+    if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
+        return _check_api_request_auth()
+    # Also protect the settings/runtime GET since it now returns the API key
+    if request.path == '/api/settings/runtime':
+        return _check_api_request_auth()
+    return None
 
 
 @app.route('/api/status')
@@ -1888,10 +1805,15 @@ def upload_theme(rating_key):
             return jsonify({'error': message}), status_code
 
         local_path.mkdir(parents=True, exist_ok=True)
-        upload_file.save(str(theme_path))
-        if theme_path.stat().st_size > MAX_UPLOAD_BYTES:
-            theme_path.unlink(missing_ok=True)
-            return jsonify({'error': 'Uploaded file is too large'}), 413
+        tmp_path = theme_path.with_suffix('.mp3.tmp')
+        try:
+            upload_file.save(str(tmp_path))
+            if tmp_path.stat().st_size > MAX_UPLOAD_BYTES:
+                return jsonify({'error': 'Uploaded file is too large'}), 413
+            tmp_path.rename(theme_path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
         logger.info('Uploaded theme for %s to %s', item.title, theme_path)
         send_pushover_notification('Theme Uploaded', f'{item.title} theme uploaded')
@@ -2026,8 +1948,15 @@ def preview_themerrdb_theme(rating_key):
             return jsonify({'error': 'No theme available in ThemerrDB'}), 404
         
         youtube_url = themerrdb_data['youtube_theme_url']
-        
+
+        if not is_valid_youtube_url(youtube_url):
+            logger.warning('ThemerrDB returned an invalid YouTube URL for item %s', rating_key)
+            return jsonify({'error': 'ThemerrDB returned an invalid theme URL'}), 502
+
         audio_url = _extract_youtube_audio_url(youtube_url)
+        if not _is_valid_audio_stream_url(audio_url):
+            logger.warning('yt-dlp returned an unexpected stream host for item %s', rating_key)
+            return jsonify({'error': 'Resolved audio stream URL is not from an allowed host'}), 502
         response = http_requests.get(audio_url, stream=True, timeout=30)
         response.raise_for_status()
         return Response(
@@ -2067,7 +1996,11 @@ def download_from_themerrdb(rating_key):
             return jsonify({'error': 'No theme available in ThemerrDB'}), 404
         
         youtube_url = themerrdb_data['youtube_theme_url']
-        
+
+        if not is_valid_youtube_url(youtube_url):
+            logger.warning('ThemerrDB returned an invalid YouTube URL for item %s', rating_key)
+            return jsonify({'error': 'ThemerrDB returned an invalid theme URL'}), 502
+
         with tempfile.TemporaryDirectory(dir=YTDLP_WORKDIR) as tmpdir:
             mp3_path = _download_youtube_theme_mp3(youtube_url, tmpdir)
             local_path.mkdir(parents=True, exist_ok=True)
@@ -2202,7 +2135,15 @@ def preview_provider_themerrdb_theme(provider, item_id):
             return jsonify({'error': 'No theme available in ThemerrDB'}), 404
 
         youtube_url = themerrdb_data['youtube_theme_url']
+
+        if not is_valid_youtube_url(youtube_url):
+            logger.warning('ThemerrDB returned an invalid YouTube URL for %s item %s', provider, item_id)
+            return jsonify({'error': 'ThemerrDB returned an invalid theme URL'}), 502
+
         audio_url = _extract_youtube_audio_url(youtube_url)
+        if not _is_valid_audio_stream_url(audio_url):
+            logger.warning('yt-dlp returned an unexpected stream host for %s item %s', provider, item_id)
+            return jsonify({'error': 'Resolved audio stream URL is not from an allowed host'}), 502
         response = http_requests.get(audio_url, stream=True, timeout=30)
         response.raise_for_status()
         return Response(
@@ -2242,6 +2183,11 @@ def download_provider_from_themerrdb(provider, item_id):
             return jsonify({'error': 'No theme available in ThemerrDB'}), 404
 
         youtube_url = themerrdb_data['youtube_theme_url']
+
+        if not is_valid_youtube_url(youtube_url):
+            logger.warning('ThemerrDB returned an invalid YouTube URL for %s item %s', provider, item_id)
+            return jsonify({'error': 'ThemerrDB returned an invalid theme URL'}), 502
+
         with tempfile.TemporaryDirectory(dir=YTDLP_WORKDIR) as tmpdir:
             mp3_path = _download_youtube_theme_mp3(youtube_url, tmpdir)
             local_path.mkdir(parents=True, exist_ok=True)
@@ -2338,10 +2284,15 @@ def upload_provider_theme(provider, item_id):
             return jsonify({'error': message}), status_code
 
         local_path.mkdir(parents=True, exist_ok=True)
-        upload_file.save(str(theme_path))
-        if theme_path.stat().st_size > MAX_UPLOAD_BYTES:
-            theme_path.unlink(missing_ok=True)
-            return jsonify({'error': 'Uploaded file is too large'}), 413
+        tmp_path = theme_path.with_suffix('.mp3.tmp')
+        try:
+            upload_file.save(str(tmp_path))
+            if tmp_path.stat().st_size > MAX_UPLOAD_BYTES:
+                return jsonify({'error': 'Uploaded file is too large'}), 413
+            tmp_path.rename(theme_path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
         logger.info('Uploaded theme for %s item', provider)
         send_pushover_notification('Theme Uploaded', f"{context['title']} theme uploaded")

@@ -7,6 +7,22 @@ It includes a Flask-based **web UI** (`web_app.py`) with download sources from
 Plex, ThemerrDB, and YouTube, plus Sonarr/Radarr webhook support and optional
 Pushover notifications.
 
+## Project structure
+
+The application is split across the following layers:
+
+| File/Directory | Purpose |
+|---|---|
+| `web_app.py` | Flask app entry point — routes, request handling, caching |
+| `app/media_utils.py` | Filesystem path validation, upload constraints, theme scanning |
+| `app/external_ids.py` | IMDB/TMDB/TVDB ID extraction for Plex and Jellyfin items |
+| `app/youtube_utils.py` | YouTube URL validation and yt-dlp option builders |
+| `app/plex_utils.py` | Plex server connection and library path helpers |
+| `app/jellyfin_utils.py` | Jellyfin connection and media path helpers |
+| `templates/index.html` | Single-page app shell |
+| `static/css/style.css` | Sonarr-inspired dark/light theme CSS |
+| `static/js/app.js` | Frontend logic (library browser, modals, multi-select, settings) |
+
 ## Local validation before finishing a task
 
 Always run **all** of these before pushing changes:
@@ -14,6 +30,7 @@ Always run **all** of these before pushing changes:
 ```bash
 # Syntax check
 python3 -m py_compile web_app.py
+python3 -m py_compile app/*.py
 
 # Unit tests (must all pass)
 python3 -m pytest tests/ -v
@@ -44,7 +61,7 @@ use CI behavior instead of local screenshot commits:
 
 ## Implementation constraints
 
-- Keep behavior Docker-compatible.
+- Keep behavior Docker-compatible (Python 3.11-slim base image).
 - Keep environment variable names stable unless explicitly asked to migrate them.
 - Do not hardcode credentials, server URLs, or filesystem paths.
 - Favor explicit logging and clear error messages.
@@ -67,3 +84,9 @@ use CI behavior instead of local screenshot commits:
 | `static/js/app.js` | Frontend logic (library browser, modals, multi-select, settings) |
 | `.github/workflows/screenshots.yml` | CI workflow — screenshot artifacts on UI PRs; auto-updates on main |
 | `.github/workflows/sanitize-screenshot-changes.yml` | CI workflow — auto-removes direct screenshots/ changes in branches/PRs |
+
+## API key
+
+The API key is **not** returned by the unauthenticated `GET /api/settings/runtime`
+endpoint. It stays in JS memory for the lifetime of the tab. When `API_KEY`
+is not set, the auto-generated startup API key is printed to the container log at startup.

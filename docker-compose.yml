@@ -16,7 +16,7 @@ services:
     cpus: 1.00
     # tmpfs for runtime directories (writable while root fs is read-only)
     tmpfs:
-      - /run:rw,exec,nosuid,nodev,size=64m
+      - /run:rw,noexec,nosuid,nodev,size=64m
       - /tmp:rw,noexec,nosuid,nodev,size=512m
     environment:
       PLEX_URL: ${PLEX_URL}
@@ -27,7 +27,7 @@ services:
       FLASK_DEBUG: ${FLASK_DEBUG:-false}
       DEFAULT_THEME: ${DEFAULT_THEME:-dark}
       DEFAULT_VIEW: ${DEFAULT_VIEW:-list}
-      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
+      API_KEY: ${API_KEY:-}
       WEBHOOK_USERNAME: ${WEBHOOK_USERNAME:-}
       WEBHOOK_PASSWORD: ${WEBHOOK_PASSWORD:-}
     volumes:
