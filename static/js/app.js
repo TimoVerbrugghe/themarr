@@ -751,7 +751,13 @@ function createGetThemeButton(item, view) {
   plexImg.src = 'https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/plex.svg';
   plexImg.alt = '';
   plexImg.className = 'get-theme-indicator' + (item.has_plex_theme ? '' : ' unavailable');
-  plexImg.title = item.has_plex_theme ? 'Plex theme available' : 'No Plex theme';
+  if (item.has_plex_theme) {
+    plexImg.title = item.plex_theme_source_unverified
+      ? 'Plex reports a theme, but source is unverified because a local theme.mp3 already exists'
+      : 'Plex theme available';
+  } else {
+    plexImg.title = 'No Plex theme';
+  }
   indicators.appendChild(plexImg);
 
   const tdbImg = document.createElement('img');
@@ -1231,7 +1237,15 @@ function openGetThemeModal(item) {
 
   if (plexBtn) {
     plexBtn.disabled = !item.has_plex_theme;
-    if (plexStatus) plexStatus.textContent = item.has_plex_theme ? 'Theme available' : 'Not available';
+    if (plexStatus) {
+      if (!item.has_plex_theme) {
+        plexStatus.textContent = 'Not available';
+      } else if (item.plex_theme_source_unverified) {
+        plexStatus.textContent = 'Available (source unverified: local theme exists)';
+      } else {
+        plexStatus.textContent = 'Theme available';
+      }
+    }
   }
   if (tdbBtn) {
     tdbBtn.disabled = !item.has_themerrdb_theme;
