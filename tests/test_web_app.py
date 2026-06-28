@@ -18,8 +18,10 @@ def app():
     import web_app
     web_app.app.config['TESTING'] = True
     web_app._invalidate_library_cache()
+    web_app._themerrdb_cache.clear()
     yield web_app.app
     web_app._invalidate_library_cache()
+    web_app._themerrdb_cache.clear()
 
 
 @pytest.fixture
@@ -219,6 +221,52 @@ class TestLibraryItems:
         assert data[0]['title'] == 'Test Movie'
         assert data[0]['type'] == 'movie'
 
+
+class TestExternalIds:
+    def test_extract_external_ids_from_dict_guids(self):
+        import web_app
+
+        item = MagicMock()
+        item.guids = [
+            {'id': 'imdb://tt0111161'},
+            {'id': 'tvdb://121361'},
+        ]
+
+        ids = web_app.extract_external_ids(item)
+        assert ids == {'imdb': 'tt0111161', 'tvdb': '121361', 'tmdb': None}
+
+    def test_extract_external_ids_from_plex_guid_objects(self):
+        import web_app
+
+        item = MagicMock()
+        item.guids = [
+            type('GuidObj', (), {'id': 'imdb://tt0468569'})(),
+            type('GuidObj', (), {'id': 'tvdb://80379'})(),
+        ]
+
+        ids = web_app.extract_external_ids(item)
+        assert ids == {'imdb': 'tt0468569', 'tvdb': '80379', 'tmdb': None}
+
+    def test_serialize_jellyfin_item_sets_themerrdb_flag(self):
+        import web_app
+
+        jellyfin_item = {
+            'Id': 'jf-1',
+            'Name': 'Jellyfin Movie',
+            'Type': 'Movie',
+            'Path': '/movies/Jellyfin Movie (2020)',
+            'ProductionYear': 2020,
+            'ProviderIds': {'Imdb': 'tt1234567', 'Tmdb': '1234'},
+        }
+
+        with patch('web_app.get_themerrdb_theme_for_item', return_value={'youtube_theme_url': 'https://youtube.com/watch?v=test'}):
+            data = web_app._serialize_jellyfin_item(jellyfin_item, 'jf-lib', theme_dirs={})
+
+        assert data['has_themerrdb_theme'] is True
+        assert data['external_ids'] == {'imdb': 'tt1234567', 'tmdb': '1234', 'tvdb': None}
+
+
+class TestLibraryItemsAdditional:
     def test_items_with_existing_theme(self, client, mock_plex, tmp_path):
         show_dir = tmp_path / 'Test Show (2020)'
         show_dir.mkdir()
@@ -271,6 +319,17 @@ class TestLibraryItems:
         assert data[0]['provider'] == 'jellyfin'
         assert data[0]['title'] == 'Jellyfin Show'
 
+    def test_scan_local_theme_dirs_detects_theme_when_item_path_is_base(self, tmp_path):
+        import web_app
+
+        movie_dir = tmp_path / 'Monsters, Inc. (2001)'
+        movie_dir.mkdir()
+        theme_path = movie_dir / 'theme.mp3'
+        theme_path.write_bytes(b'\xff\xfb' * 100)
+
+        scanned = web_app.scan_local_theme_dirs({str(movie_dir)})
+        assert scanned[str(movie_dir)] == theme_path.stat().st_size
+
 
 class TestGetItemLocalPath:
     def test_show_path(self, tmp_path):
@@ -295,6 +354,16 @@ class TestGetItemLocalPath:
         result = get_item_local_path(movie)
         assert result == movie_dir
 
+    def test_movie_folder_with_dot_name_is_not_treated_as_file(self, tmp_path):
+        from web_app import get_item_local_path
+        movie_dir = tmp_path / 'Monsters, Inc. (2001)'
+        movie_dir.mkdir()
+        movie = MagicMock()
+        movie.type = 'movie'
+        movie.locations = [str(movie_dir)]
+        result = get_item_local_path(movie)
+        assert result == movie_dir
+
     def test_no_locations(self):
         from web_app import get_item_local_path
         item = MagicMock()
@@ -302,6 +371,18 @@ class TestGetItemLocalPath:
         item.locations = []
         result = get_item_local_path(item)
         assert result is None
+
+
+class TestGetJellyfinItemLocalPath:
+    def test_movie_file_path_returns_parent(self):
+        from web_app import get_jellyfin_item_local_path
+        item = {'Type': 'Movie', 'Path': '/movies/Monsters, Inc. (2001)/movie.mkv'}
+        assert str(get_jellyfin_item_local_path(item)) == '/movies/Monsters, Inc. (2001)'
+
+    def test_movie_folder_with_dot_name_returns_folder(self):
+        from web_app import get_jellyfin_item_local_path
+        item = {'Type': 'Movie', 'Path': '/movies/Monsters, Inc. (2001)'}
+        assert str(get_jellyfin_item_local_path(item)) == '/movies/Monsters, Inc. (2001)'
 
 
 class TestLocalPathValidation:
@@ -458,6 +539,13 @@ class TestProviderThemeDownload:
         resp = client.get('/api/items/jellyfin/abc/theme/preview')
         assert resp.status_code == 400
         assert 'only supported for Plex items' in resp.get_json()['error']
+
+    def test_jellyfin_preview_check_from_provider_source_not_supported(self, client):
+        resp = client.get('/api/items/jellyfin/abc/theme/preview/check')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['available'] is False
+        assert 'only supported for Plex items' in data['reason']
 
 
 class TestThemeUpload:
@@ -675,28 +763,61 @@ class TestThemeYoutube:
 
 
 class TestThemerrDB:
+    def test_query_themerrdb_caches_not_found_results(self):
+        import web_app
+
+        web_app._themerrdb_cache.clear()
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        with patch('web_app.http_requests.get', return_value=mock_response) as mock_get:
+            first = web_app.query_themerrdb('movies', 'imdb', 'tt0000001')
+            second = web_app.query_themerrdb('movies', 'imdb', 'tt0000001')
+
+        assert first is None
+        assert second is None
+        assert mock_get.call_count == 1
+
+    def test_get_themerrdb_theme_reuses_cached_result_across_item_ids(self):
+        import web_app
+
+        web_app._themerrdb_cache.clear()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {'youtube_theme_url': 'https://youtube.com/watch?v=test'}
+        with patch('web_app.http_requests.get', return_value=mock_response) as mock_get:
+            first = web_app.get_themerrdb_theme_for_external_ids('movie', {'imdb': 'tt1234567', 'tmdb': '123', 'tvdb': None})
+            second = web_app.get_themerrdb_theme_for_external_ids('movie', {'imdb': None, 'tmdb': '123', 'tvdb': None})
+
+        assert first is not None
+        assert second is not None
+        assert mock_get.call_count == 1
+
     def test_check_themerrdb_available(self, client, mock_plex):
         show = make_mock_show()
+        show.guids = [{'id': 'imdb://tt1234567'}]
         mock_plex.fetchItem.return_value = show
 
-        with patch('web_app.get_themerrdb_theme', return_value={'youtube_theme_url': 'https://youtube.com/watch?v=test'}):
+        with patch('web_app._get_themerrdb_data_for_context', return_value={'youtube_theme_url': 'https://youtube.com/watch?v=test'}), \
+             patch('web_app._extract_youtube_audio_url', return_value='https://audio.example/stream'):
             resp = client.get('/api/items/1/theme/themerrdb/check')
 
         assert resp.status_code == 200
-        assert resp.get_json() == {
-            'available': True,
-            'youtube_url': 'https://youtube.com/watch?v=test',
-        }
+        payload = resp.get_json()
+        assert payload['available'] is True
+        assert payload['youtube_url'] == 'https://youtube.com/watch?v=test'
 
     def test_check_themerrdb_unavailable(self, client, mock_plex):
         show = make_mock_show()
+        show.guids = []
         mock_plex.fetchItem.return_value = show
 
         with patch('web_app.get_themerrdb_theme', return_value=None):
             resp = client.get('/api/items/1/theme/themerrdb/check')
 
         assert resp.status_code == 200
-        assert resp.get_json() == {'available': False}
+        payload = resp.get_json()
+        assert payload['available'] is False
+        assert 'reason' in payload
 
     def test_preview_themerrdb_not_found(self, client, mock_plex):
         show = make_mock_show()
@@ -767,6 +888,25 @@ class TestThemerrDB:
 
         assert resp.status_code == 409
         assert resp.get_json()['exists'] is True
+
+    def test_check_provider_themerrdb_available_for_jellyfin(self, client):
+        context = {
+            'provider': 'jellyfin',
+            'item_id': 'jf-1',
+            'title': 'Jellyfin Movie',
+            'item': {'Id': 'jf-1', 'Type': 'Movie', 'ProviderIds': {'Imdb': 'tt1234567'}},
+            'local_path': '/movies/Jellyfin Movie (2020)',
+        }
+        with patch('web_app._get_item_context', return_value=context), \
+             patch('web_app._get_themerrdb_data_for_context', return_value={'youtube_theme_url': 'https://youtube.com/watch?v=test'}), \
+             patch('web_app._extract_youtube_audio_url', return_value='https://audio.example/stream'), \
+             patch('web_app._get_external_ids_for_context', return_value={'imdb': 'tt1234567', 'tmdb': None, 'tvdb': None}):
+            resp = client.get('/api/items/jellyfin/jf-1/theme/themerrdb/check')
+
+        assert resp.status_code == 200
+        payload = resp.get_json()
+        assert payload['available'] is True
+        assert payload['youtube_url'] == 'https://youtube.com/watch?v=test'
 
 
 class TestYoutubeSearch:

@@ -33,6 +33,10 @@ PLEX_RETRY_DELAY_DEFAULT = 30  # seconds between retry attempts
 JELLYFIN_TIMEOUT_SECONDS = 30
 ALLOWED_UPLOAD_TYPES = {'audio/mpeg', 'audio/mp3', 'application/octet-stream'}
 ALLOWED_YOUTUBE_HOSTS = {'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'}
+VIDEO_FILE_EXTENSIONS = {
+    '.3gp', '.asf', '.avi', '.divx', '.flv', '.iso', '.m2ts', '.m4v', '.mkv',
+    '.mov', '.mp4', '.mpeg', '.mpg', '.mts', '.ts', '.vob', '.webm', '.wmv',
+}
 THEMERRDB_API_BASE = 'https://app.lizardbyte.dev/ThemerrDB'
 THEMERRDB_CACHE_TTL = 24 * 3600  # 24 hours
 
@@ -148,9 +152,14 @@ def get_jellyfin_item_local_path(item):
         return None
     candidate = Path(raw_path)
     item_type = (item.get('Type') or '').lower()
-    if item_type == 'movie' and candidate.suffix:
+    if item_type == 'movie' and _is_video_file_path(candidate):
         return candidate.parent
     return candidate
+
+
+def _is_video_file_path(path):
+    """Return True when a path appears to reference a video file."""
+    return path.suffix.lower() in VIDEO_FILE_EXTENSIONS
 
 
 def _configured_media_roots():
@@ -224,6 +233,11 @@ def _serialize_jellyfin_item(item, library_id, theme_dirs=None):
 
     item_type = (item.get('Type') or '').lower()
     media_type = 'show' if item_type == 'series' else 'movie'
+    external_ids = extract_jellyfin_external_ids(item)
+    has_themerrdb_theme = False
+    if external_ids['imdb'] or external_ids['tmdb'] or external_ids['tvdb']:
+        themerrdb_data = get_themerrdb_theme_for_item('jellyfin', item)
+        has_themerrdb_theme = themerrdb_data is not None
     item_id = str(item.get('Id'))
     return {
         'id': item_id,
@@ -236,8 +250,10 @@ def _serialize_jellyfin_item(item, library_id, theme_dirs=None):
         'type': media_type,
         'has_plex_theme': False,
         'has_local_theme': theme_exists,
+        'has_themerrdb_theme': has_themerrdb_theme,
         'theme_size': theme_size,
         'local_path': str(local_path) if local_path else None,
+        'external_ids': external_ids,
     }
 
 
@@ -295,7 +311,7 @@ def _get_jellyfin_item(jellyfin_item_id):
     response = jellyfin_session_get(
         jellyfin,
         f'/Users/{user_id}/Items/{jellyfin_item_id}',
-        params={'Fields': 'Path,ProductionYear,ParentId'},
+        params={'Fields': 'Path,ProductionYear,ParentId,ProviderIds'},
     )
     response.raise_for_status()
     return jellyfin, user_id, response.json()
@@ -341,14 +357,72 @@ def extract_external_ids(item):
     
     Returns dict with 'imdb' and 'tvdb' keys (None if not found).
     """
-    ids = {'imdb': None, 'tvdb': None}
+    ids = {'imdb': None, 'tvdb': None, 'tmdb': None}
     for guid in getattr(item, 'guids', []):
-        guid_id = guid.get('id', '')
+        if isinstance(guid, dict):
+            guid_id = guid.get('id', '')
+        else:
+            guid_id = getattr(guid, 'id', '') or ''
         if guid_id.startswith('imdb://'):
             ids['imdb'] = guid_id.replace('imdb://', '')
+        elif guid_id.startswith('tmdb://'):
+            ids['tmdb'] = guid_id.replace('tmdb://', '')
         elif guid_id.startswith('tvdb://'):
             ids['tvdb'] = guid_id.replace('tvdb://', '')
     return ids
+
+
+def _normalize_external_id(value):
+    """Normalize provider ID values to a stripped string or None."""
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    if value is None:
+        return None
+    value = str(value).strip()
+    return value or None
+
+
+def extract_jellyfin_external_ids(item):
+    """Extract external IDs (IMDB/TMDB/TVDB) from a Jellyfin item dict."""
+    provider_ids = item.get('ProviderIds') if isinstance(item, dict) else {}
+    provider_ids = provider_ids if isinstance(provider_ids, dict) else {}
+    return {
+        'imdb': _normalize_external_id(provider_ids.get('Imdb')),
+        'tmdb': _normalize_external_id(provider_ids.get('Tmdb')),
+        'tvdb': _normalize_external_id(provider_ids.get('Tvdb')),
+    }
+
+
+def get_themerrdb_theme_for_external_ids(item_type, external_ids):
+    """Resolve ThemerrDB theme metadata from external IDs for a media type."""
+    themerr_item_type = 'tv_shows' if item_type == 'show' else 'movies'
+    tmdb_id = external_ids.get('tmdb') or external_ids.get('tvdb')
+    cache_ids = {
+        external_ids.get('imdb'),
+        external_ids.get('tmdb'),
+        external_ids.get('tvdb'),
+    }
+    for database, external_id in [('imdb', external_ids.get('imdb')), ('themoviedb', tmdb_id)]:
+        if external_id:
+            theme_data = query_themerrdb(themerr_item_type, database, external_id)
+            if theme_data:
+                for cache_external_id in cache_ids:
+                    if not cache_external_id:
+                        continue
+                    _set_cached_themerrdb(cache_external_id, theme_data)
+                return theme_data
+    return None
+
+
+def get_themerrdb_theme_for_item(provider, item):
+    """Get ThemerrDB theme metadata for a provider item (Plex or Jellyfin)."""
+    if provider == 'plex':
+        item_type = 'show' if getattr(item, 'type', None) == 'show' else 'movie'
+        external_ids = extract_external_ids(item)
+    else:
+        item_type = 'show' if (item.get('Type') or '').lower() == 'series' else 'movie'
+        external_ids = extract_jellyfin_external_ids(item)
+    return get_themerrdb_theme_for_external_ids(item_type, external_ids)
 
 
 def _get_themerrdb_cache_key(external_id):
@@ -357,13 +431,13 @@ def _get_themerrdb_cache_key(external_id):
 
 
 def _get_cached_themerrdb(external_id):
-    """Return cached ThemerrDB data if available and fresh."""
+    """Return (cache_hit, data) for a ThemerrDB cache lookup."""
     cache_key = _get_themerrdb_cache_key(external_id)
     with _themerrdb_cache_lock:
         cached = _themerrdb_cache.get(cache_key)
         if cached and time.time() - cached['timestamp'] < THEMERRDB_CACHE_TTL:
-            return cached['data']
-    return None
+            return True, cached['data']
+    return False, None
 
 
 def _set_cached_themerrdb(external_id, data):
@@ -391,13 +465,13 @@ def query_themerrdb(item_type, database, external_id):
         return None
     
     # Check cache first
-    cached = _get_cached_themerrdb(external_id)
-    if cached is not None:
+    cache_hit, cached = _get_cached_themerrdb(external_id)
+    if cache_hit:
         return cached
     
     try:
         url = f'{THEMERRDB_API_BASE}/{item_type}/{database}/{external_id}.json'
-        logger.info(f'Querying ThemerrDB: {url}')
+        logger.debug('Querying ThemerrDB for theme availability')
         response = http_requests.get(url, timeout=10)
         
         if response.status_code == 200:
@@ -405,14 +479,14 @@ def query_themerrdb(item_type, database, external_id):
             _set_cached_themerrdb(external_id, data)
             return data
         elif response.status_code == 404:
-            logger.info(f'Theme not found in ThemerrDB: {url}')
+            logger.debug('Theme not found in ThemerrDB')
             _set_cached_themerrdb(external_id, None)
             return None
         else:
-            logger.warning(f'ThemerrDB query failed with status {response.status_code}: {url}')
+            logger.warning('ThemerrDB query failed with status %s', response.status_code)
             return None
     except Exception as exc:
-        logger.error(f'Error querying ThemerrDB: {exc}')
+        logger.error('Error querying ThemerrDB: %s', type(exc).__name__)
         return None
 
 
@@ -421,29 +495,99 @@ def get_themerrdb_theme(item):
     
     Returns theme metadata dict or None if not available.
     """
-    item_type = 'tv_shows' if item.type == 'show' else 'movies'
-    ids = extract_external_ids(item)
-    
-    # Try IMDB first (more reliable), then TVDB
-    for database, external_id in [('imdb', ids['imdb']), ('themoviedb', ids['tvdb'])]:
-        if external_id:
-            theme_data = query_themerrdb(item_type, database, external_id)
-            if theme_data:
-                return theme_data
-    
-    return None
+    return get_themerrdb_theme_for_item('plex', item)
+
+
+def _get_themerrdb_data_for_context(context):
+    """Resolve ThemerrDB metadata for a provider item context."""
+    return get_themerrdb_theme_for_item(context['provider'], context['item'])
+
+
+def _get_external_ids_for_context(context):
+    """Return normalized external IDs for a provider item context."""
+    if context['provider'] == 'plex':
+        return extract_external_ids(context['item'])
+    return extract_jellyfin_external_ids(context['item'])
+
+
+def _check_themerrdb_availability_for_context(context, *, validate_preview=False):
+    """Return availability metadata for a provider item's ThemerrDB theme."""
+    external_ids = _get_external_ids_for_context(context)
+    if not any(external_ids.values()):
+        return {
+            'available': False,
+            'reason': 'No IMDB/TMDB/TVDB identifiers are available for this item.',
+            'external_ids': external_ids,
+        }
+
+    themerrdb_data = _get_themerrdb_data_for_context(context)
+    if not themerrdb_data:
+        return {
+            'available': False,
+            'reason': 'No matching theme was found in ThemerrDB.',
+            'external_ids': external_ids,
+        }
+
+    youtube_url = themerrdb_data.get('youtube_theme_url')
+    if not youtube_url:
+        return {
+            'available': False,
+            'reason': 'ThemerrDB did not provide a YouTube theme URL for this item.',
+            'external_ids': external_ids,
+        }
+
+    if validate_preview:
+        try:
+            _extract_youtube_audio_url(youtube_url)
+        except yt_dlp.utils.DownloadError as exc:
+            return {
+                'available': False,
+                'reason': f'Theme URL found but preview is unavailable: {_clean_yt_dlp_error(exc)}',
+                'external_ids': external_ids,
+                'youtube_url': youtube_url,
+            }
+
+    return {
+        'available': True,
+        'youtube_url': youtube_url,
+        'external_ids': external_ids,
+    }
+
+
+def _check_plex_preview_availability(item):
+    """Return availability metadata for Plex source theme preview."""
+    if not getattr(item, 'theme', None):
+        return {'available': False, 'reason': 'No theme is available in Plex for this item.'}
+
+    try:
+        plex = get_plex()
+        url = plex.url(item.theme, includeToken=True)
+        response = plex_session_get(plex, url, stream=True, timeout=15)
+        response.raise_for_status()
+        response.close()
+        return {'available': True}
+    except Exception as exc:
+        logger.warning('Unable to stream Plex preview for item %s: %s', getattr(item, 'ratingKey', '?'), exc)
+        return {'available': False, 'reason': 'Unable to stream the Plex preview right now.'}
 
 
 def scan_local_theme_dirs(base_paths):
     """Scan base directories and return a dict mapping directory path -> theme.mp3 size.
 
-    Does a single glob pass per base directory instead of one stat() per item,
-    which dramatically reduces NFS round-trips when libraries are large.
+    Supports both library root paths and item-directory paths as scan inputs.
+    This keeps callers fast while allowing mixed cache hydration strategies.
     """
     theme_dirs = {}
     for base in base_paths:
         try:
-            for p in Path(base).glob('*/theme.mp3'):
+            base_path = Path(base)
+            direct_theme = base_path / 'theme.mp3'
+            if direct_theme.is_file():
+                size = direct_theme.stat().st_size
+                if size > 0:
+                    theme_dirs[str(base_path)] = size
+
+            for p in base_path.glob('*/theme.mp3'):
                 try:
                     size = p.stat().st_size
                     if size > 0:
@@ -490,7 +634,7 @@ def get_item_local_path(item):
             return candidate
         if item.type == 'movie':
             # Movie locations may be either file paths or folder paths.
-            return candidate.parent if candidate.suffix else candidate
+            return candidate.parent if _is_video_file_path(candidate) else candidate
 
     return None
 
@@ -517,6 +661,103 @@ def youtube_match_filter(info_dict, *, incomplete):
     if duration and duration > MAX_YOUTUBE_DURATION_SECONDS:
         return f'Video exceeds {MAX_YOUTUBE_DURATION_SECONDS} seconds'
     return None
+
+
+def _youtube_retry_profiles():
+    """Yield yt-dlp retry profiles for videos with client-specific availability."""
+    return [
+        ('default', {}),
+        ('android', {'extractor_args': {'youtube': {'player_client': ['android']}}}),
+    ]
+
+
+def _youtube_preview_ydl_opts(profile_overrides=None):
+    """Build yt-dlp options for extracting a preview audio stream URL."""
+    opts = {
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'no_warnings': True,
+        'noplaylist': True,
+        'skip_download': True,
+        'socket_timeout': 30,
+        'js_runtimes': {'node': {}},
+        'remote_components': ['ejs:github'],
+    }
+    if profile_overrides:
+        opts.update(profile_overrides)
+    return opts
+
+
+def _youtube_download_ydl_opts(tmpdir, profile_overrides=None):
+    """Build yt-dlp options for downloading and converting a theme MP3."""
+    opts = {
+        'format': 'bestaudio/best',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        'outtmpl': os.path.join(tmpdir, 'theme.%(ext)s'),
+        'quiet': True,
+        'no_warnings': True,
+        'noplaylist': True,
+        'match_filter': youtube_match_filter,
+        'max_filesize': MAX_UPLOAD_BYTES,
+        'js_runtimes': {'node': {}},
+        'remote_components': ['ejs:github'],
+    }
+    if profile_overrides:
+        opts.update(profile_overrides)
+    return opts
+
+
+def _clean_yt_dlp_error(exc):
+    """Normalize yt-dlp error messages for user-facing responses."""
+    return str(exc).removeprefix('ERROR: ').strip()
+
+
+def _stream_http_response_chunks(response, *, chunk_size=8192):
+    """Yield streamed HTTP response chunks while handling client disconnects."""
+    try:
+        for chunk in response.iter_content(chunk_size=chunk_size):
+            if chunk:
+                yield chunk
+    except (http_requests.exceptions.ChunkedEncodingError, http_requests.exceptions.ConnectionError, BrokenPipeError, ConnectionResetError) as exc:
+        logger.info('Stream interrupted while sending preview audio: %s', exc)
+    finally:
+        response.close()
+
+
+def _extract_youtube_audio_url(youtube_url):
+    """Resolve a direct audio stream URL for a YouTube video with retries."""
+    errors = []
+    for profile_name, overrides in _youtube_retry_profiles():
+        try:
+            with yt_dlp.YoutubeDL(_youtube_preview_ydl_opts(overrides)) as ydl:
+                info = ydl.extract_info(youtube_url, download=False)
+            audio_url = info.get('url')
+            if audio_url:
+                return audio_url
+            errors.append(f'{profile_name}: Could not extract audio from YouTube')
+        except yt_dlp.utils.DownloadError as exc:
+            errors.append(f'{profile_name}: {_clean_yt_dlp_error(exc)}')
+    raise yt_dlp.utils.DownloadError(' | '.join(errors))
+
+
+def _download_youtube_theme_mp3(youtube_url, tmpdir):
+    """Download YouTube audio as MP3 with client-profile fallback retries."""
+    errors = []
+    for profile_name, overrides in _youtube_retry_profiles():
+        try:
+            with yt_dlp.YoutubeDL(_youtube_download_ydl_opts(tmpdir, overrides)) as ydl:
+                ydl.download([youtube_url])
+            mp3_files = list(Path(tmpdir).glob('*.mp3'))
+            if mp3_files:
+                return mp3_files[0]
+            errors.append(f'{profile_name}: Download failed: no MP3 file produced')
+        except yt_dlp.utils.DownloadError as exc:
+            errors.append(f'{profile_name}: {_clean_yt_dlp_error(exc)}')
+    raise yt_dlp.utils.DownloadError(' | '.join(errors))
 
 def is_valid_upload(upload_file):
     """Validate uploaded theme file name, type, and size."""
@@ -692,6 +933,7 @@ def _build_library_items(section_id, include_theme_state=True, provider='plex'):
             theme_dirs = {}
             scan_duration = 0.0
 
+        logger.info('Checking ThemerrDB availability for %s section %s (%d items)', provider, section_id, len(items))
         result = [item_to_dict(item, theme_dirs=theme_dirs, provider='plex', library_id=section_id) for item in items]
     else:
         jellyfin = get_jellyfin()
@@ -704,7 +946,7 @@ def _build_library_items(section_id, include_theme_state=True, provider='plex'):
                 'ParentId': str(section_id),
                 'IncludeItemTypes': 'Series,Movie',
                 'Recursive': 'true',
-                'Fields': 'Path,ProductionYear',
+                'Fields': 'Path,ProductionYear,ProviderIds',
             },
         )
         response.raise_for_status()
@@ -717,7 +959,7 @@ def _build_library_items(section_id, include_theme_state=True, provider='plex'):
             for item in items:
                 local_path = get_jellyfin_item_local_path(item)
                 if local_path:
-                    base_paths.add(str(local_path.parent if local_path.suffix else local_path))
+                    base_paths.add(str(local_path.parent if _is_video_file_path(local_path) else local_path))
             scan_started = time.perf_counter()
             theme_dirs = scan_local_theme_dirs(base_paths) if base_paths else {}
             scan_duration = time.perf_counter() - scan_started
@@ -725,6 +967,7 @@ def _build_library_items(section_id, include_theme_state=True, provider='plex'):
             theme_dirs = {}
             scan_duration = 0.0
 
+        logger.info('Checking ThemerrDB availability for %s section %s (%d items)', provider, section_id, len(items))
         result = [
             _serialize_jellyfin_item(item, section_id, theme_dirs=theme_dirs)
             for item in items
@@ -956,65 +1199,96 @@ def _kick_off_cache_warmup():
 def _warm_library_cache():
     """Background thread: pre-load metadata, then hydrate local theme state."""
     logger.info('Library cache warmup starting…')
+    sections = []
     try:
         plex = get_plex()
-        sections = [s for s in plex.library.sections() if s.type in ('show', 'movie')]
+        for section in plex.library.sections():
+            if section.type in ('show', 'movie'):
+                sections.append({
+                    'provider': 'plex',
+                    'cache_key': section.key,
+                    'section_id': section.key,
+                    'title': section.title,
+                })
     except Exception as exc:
         logger.warning('Library cache warmup: could not connect to Plex: %s', exc)
-        _mark_theme_hydration_finished()
-        return
+
+    if jellyfin_is_configured():
+        try:
+            for section in _get_jellyfin_libraries():
+                section_id = str(section['id'])
+                sections.append({
+                    'provider': 'jellyfin',
+                    'cache_key': f'jellyfin:{section_id}',
+                    'section_id': section_id,
+                    'title': section.get('title') or section_id,
+                })
+        except Exception as exc:
+            logger.warning('Library cache warmup: could not connect to Jellyfin: %s', exc)
 
     _set_theme_hydration_total(len(sections))
     if not sections:
         _mark_theme_hydration_finished()
         return
 
-    def warm_section_metadata(section):
-        section_lock = _get_section_build_lock(section.key)
+    def warm_section_metadata(section_info):
+        provider = section_info['provider']
+        cache_key = section_info['cache_key']
+        section_id = section_info['section_id']
+        section_lock = _get_section_build_lock(cache_key)
         with section_lock:
             with _library_cache_lock:
-                if _library_cache.get(section.key) is not None:
+                if _library_cache.get(cache_key) is not None:
                     return
             try:
-                items = _build_library_items(section.key, include_theme_state=False)
+                items = _build_library_items(section_id, include_theme_state=False, provider=provider)
                 with _library_cache_lock:
-                    _library_cache[section.key] = items
+                    _library_cache[cache_key] = items
             except Exception as exc:
-                logger.warning('Library metadata warmup failed for section %s: %s', section.key, exc)
+                logger.warning('Library metadata warmup failed for %s section %s: %s', provider, section_id, exc)
 
-    def hydrate_section_theme_state(section):
+    def hydrate_section_theme_state(section_info):
+        provider = section_info['provider']
+        cache_key = section_info['cache_key']
+        section_id = section_info['section_id']
+        section_title = section_info['title']
         try:
-            section_locations = getattr(section, 'locations', None)
-            if isinstance(section_locations, (list, tuple, set)):
-                base_paths = {path for path in section_locations if isinstance(path, str) and path}
-            else:
-                base_paths = set()
-            if not base_paths:
-                theme_dirs = {}
-            else:
-                theme_dirs = scan_local_theme_dirs(base_paths)
-
-            section_lock = _get_section_build_lock(section.key)
+            section_lock = _get_section_build_lock(cache_key)
             with section_lock:
                 with _library_cache_lock:
-                    cached_items = _library_cache.get(section.key)
+                    cached_items = _library_cache.get(cache_key)
                     if cached_items is None:
                         return
+
+                    base_paths = set()
+                    for cached_item in cached_items:
+                        local_path = cached_item.get('local_path')
+                        if not local_path:
+                            continue
+                        path = Path(local_path)
+                        base_paths.add(str(path.parent if _is_video_file_path(path) else path))
+
+                    theme_dirs = scan_local_theme_dirs(base_paths) if base_paths else {}
                     updated_items = []
                     for cached_item in cached_items:
                         updated_item = dict(cached_item)
                         local_path = updated_item.get('local_path')
-                        theme_size = theme_dirs.get(local_path, 0) if local_path else 0
+                        if local_path:
+                            path = Path(local_path)
+                            lookup_key = str(path.parent if _is_video_file_path(path) else path)
+                            theme_size = theme_dirs.get(lookup_key, 0)
+                        else:
+                            theme_size = 0
                         updated_item['has_local_theme'] = theme_size > 0
                         updated_item['theme_size'] = theme_size
                         updated_items.append(updated_item)
-                    _library_cache[section.key] = updated_items
+                    _library_cache[cache_key] = updated_items
             logger.info(
-                'Library cache theme hydration complete: section %s (%s) — %d items',
-                section.key, section.title, len(updated_items),
+                'Library cache theme hydration complete: %s section %s (%s) — %d items',
+                provider, section_id, section_title, len(updated_items),
             )
         except Exception as exc:
-            logger.warning('Library cache theme hydration failed for section %s: %s', section.key, exc)
+            logger.warning('Library cache theme hydration failed for %s section %s: %s', provider, section_id, exc)
         finally:
             _advance_theme_hydration_progress()
 
@@ -1273,7 +1547,7 @@ def preview_plex_theme(rating_key):
         response = plex_session_get(plex, url, stream=True, timeout=30)
         response.raise_for_status()
         return Response(
-            response.iter_content(chunk_size=8192),
+            _stream_http_response_chunks(response),
             mimetype='audio/mpeg',
             headers={'Cache-Control': 'no-cache'},
         )
@@ -1489,39 +1763,16 @@ def download_from_youtube(rating_key):
             return jsonify({'error': 'Theme already exists', 'exists': True}), 409
 
         with tempfile.TemporaryDirectory(dir=YTDLP_WORKDIR) as tmpdir:
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                'outtmpl': os.path.join(tmpdir, 'theme.%(ext)s'),
-                'quiet': True,
-                'no_warnings': True,
-                'noplaylist': True,
-                'match_filter': youtube_match_filter,
-                'max_filesize': MAX_UPLOAD_BYTES,
-                'js_runtimes': {'node': {}},
-                'remote_components': ['ejs:github'],
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([youtube_url])
-
-            mp3_files = list(Path(tmpdir).glob('*.mp3'))
-            if not mp3_files:
-                return jsonify({'error': 'Download failed: no MP3 file produced'}), 500
-
+            mp3_path = _download_youtube_theme_mp3(youtube_url, tmpdir)
             local_path.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(mp3_files[0]), str(theme_path))
+            shutil.move(str(mp3_path), str(theme_path))
 
         logger.info('Downloaded YouTube theme for %s to %s', item.title, theme_path)
         send_pushover_notification('Theme Downloaded', f'{item.title} theme downloaded from YouTube')
         item_dict, _ = _sync_cached_item(item)
         return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
     except yt_dlp.utils.DownloadError as exc:
-        # Strip the leading "ERROR: " prefix yt-dlp adds so the toast reads cleanly
-        msg = str(exc).removeprefix('ERROR: ').strip()
+        msg = _clean_yt_dlp_error(exc)
         logger.error('Failed YouTube download for %s: %s', rating_key, exc)
         return jsonify({'error': msg}), 500
     except Exception as exc:
@@ -1534,15 +1785,14 @@ def check_themerrdb_availability(rating_key):
     try:
         plex = get_plex()
         item = plex.fetchItem(rating_key)
-        
-        themerrdb_data = get_themerrdb_theme(item)
-        if themerrdb_data:
-            return jsonify({
-                'available': True,
-                'youtube_url': themerrdb_data.get('youtube_theme_url'),
-            })
-        else:
-            return jsonify({'available': False})
+        context = {
+            'provider': 'plex',
+            'item': item,
+        }
+        return jsonify(_check_themerrdb_availability_for_context(context, validate_preview=True))
+    except http_requests.exceptions.RequestException as exc:
+        logger.warning('Failed to check ThemerrDB availability for Plex item %s: %s', rating_key, exc)
+        return jsonify({'available': False, 'reason': 'Could not reach provider metadata.'})
     except Exception as exc:
         return error_response(f'Failed to check ThemerrDB availability for {rating_key}', exc=exc)
 
@@ -1560,31 +1810,18 @@ def preview_themerrdb_theme(rating_key):
         
         youtube_url = themerrdb_data['youtube_theme_url']
         
-        try:
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'quiet': True,
-                'no_warnings': True,
-                'noplaylist': True,
-                'skip_download': True,
-                'socket_timeout': 30,
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(youtube_url, download=False)
-                audio_url = info.get('url')
-                if not audio_url:
-                    return jsonify({'error': 'Could not extract audio from YouTube'}), 500
-            
-            response = http_requests.get(audio_url, stream=True, timeout=30)
-            response.raise_for_status()
-            return Response(
-                response.iter_content(chunk_size=8192),
-                mimetype='audio/mpeg',
-                headers={'Cache-Control': 'no-cache'},
-            )
-        except Exception as exc:
-            logger.error('Failed to stream ThemerrDB theme preview: %s', exc)
-            return error_response('Failed to stream theme preview', exc=exc)
+        audio_url = _extract_youtube_audio_url(youtube_url)
+        response = http_requests.get(audio_url, stream=True, timeout=30)
+        response.raise_for_status()
+        return Response(
+            _stream_http_response_chunks(response),
+            mimetype='audio/mpeg',
+            headers={'Cache-Control': 'no-cache'},
+        )
+    except yt_dlp.utils.DownloadError as exc:
+        msg = _clean_yt_dlp_error(exc)
+        logger.error('Failed to stream ThemerrDB theme preview: %s', exc)
+        return jsonify({'error': f'ThemerrDB preview unavailable: {msg}'}), 502
     except Exception as exc:
         return error_response(f'Failed to preview ThemerrDB theme for {rating_key}', exc=exc)
 
@@ -1615,36 +1852,18 @@ def download_from_themerrdb(rating_key):
         youtube_url = themerrdb_data['youtube_theme_url']
         
         with tempfile.TemporaryDirectory(dir=YTDLP_WORKDIR) as tmpdir:
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                'outtmpl': os.path.join(tmpdir, 'theme.%(ext)s'),
-                'quiet': True,
-                'no_warnings': True,
-                'noplaylist': True,
-                'match_filter': youtube_match_filter,
-                'max_filesize': MAX_UPLOAD_BYTES,
-                'js_runtimes': {'node': {}},
-                'remote_components': ['ejs:github'],
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([youtube_url])
-            
-            mp3_files = list(Path(tmpdir).glob('*.mp3'))
-            if not mp3_files:
-                return jsonify({'error': 'Download failed: no MP3 file produced'}), 500
-            
+            mp3_path = _download_youtube_theme_mp3(youtube_url, tmpdir)
             local_path.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(mp3_files[0]), str(theme_path))
+            shutil.move(str(mp3_path), str(theme_path))
         
         logger.info('Downloaded ThemerrDB theme for %s to %s', item.title, theme_path)
         send_pushover_notification('Theme Downloaded', f'{item.title} theme downloaded from ThemerrDB')
         item_dict, _ = _sync_cached_item(item)
         return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
+    except yt_dlp.utils.DownloadError as exc:
+        msg = _clean_yt_dlp_error(exc)
+        logger.error('Failed ThemerrDB download for %s: %s', rating_key, exc)
+        return jsonify({'error': f'ThemerrDB download failed: {msg}'}), 502
     except Exception as exc:
         return error_response(f'Failed to download ThemerrDB theme for {rating_key}', exc=exc)
 
@@ -1704,6 +1923,25 @@ def preview_provider_theme(provider, item_id):
         return error_response('Plex item id must be an integer', status_code=400, exc=exc)
 
 
+@app.route('/api/items/<provider>/<path:item_id>/theme/preview/check')
+def check_provider_theme_preview(provider, item_id):
+    """Check whether previewing provider source theme is possible."""
+    try:
+        provider = _normalize_provider(provider)
+        if provider != 'plex':
+            return jsonify({'available': False, 'reason': 'Theme preview from provider source is only supported for Plex items.'})
+
+        context = _get_item_context(provider, item_id)
+        return jsonify(_check_plex_preview_availability(context['item']))
+    except http_requests.exceptions.RequestException as exc:
+        logger.warning('Failed to check preview availability for %s item %s: %s', provider, item_id, exc)
+        return jsonify({'available': False, 'reason': 'Could not reach provider to validate preview.'})
+    except ValueError as exc:
+        return error_response('Invalid provider or item identifier', status_code=400, exc=exc)
+    except Exception as exc:
+        return error_response(f'Failed to check preview availability for {provider} item {item_id}', exc=exc)
+
+
 @app.route('/api/items/<provider>/<path:item_id>/theme/download', methods=['POST'])
 def download_provider_theme(provider, item_id):
     """Download theme from provider source when supported."""
@@ -1718,6 +1956,92 @@ def download_provider_theme(provider, item_id):
         return download_theme_from_plex(int(item_id))
     except ValueError as exc:
         return error_response('Plex item id must be an integer', status_code=400, exc=exc)
+
+
+@app.route('/api/items/<provider>/<path:item_id>/theme/themerrdb/check', methods=['GET'])
+def check_provider_themerrdb_availability(provider, item_id):
+    """Check if a ThemerrDB theme is available for a provider item."""
+    try:
+        provider = _normalize_provider(provider)
+        context = _get_item_context(provider, item_id)
+        return jsonify(_check_themerrdb_availability_for_context(context, validate_preview=True))
+    except http_requests.exceptions.RequestException as exc:
+        logger.warning('Failed to check ThemerrDB availability for %s item %s: %s', provider, item_id, exc)
+        return jsonify({'available': False, 'reason': 'Could not reach provider metadata.'})
+    except ValueError as exc:
+        return error_response('Invalid provider or item identifier', status_code=400, exc=exc)
+    except Exception as exc:
+        return error_response(f'Failed to check ThemerrDB availability for {provider} item {item_id}', exc=exc)
+
+
+@app.route('/api/items/<provider>/<path:item_id>/theme/themerrdb/preview', methods=['GET'])
+def preview_provider_themerrdb_theme(provider, item_id):
+    """Stream a ThemerrDB theme preview for a provider item."""
+    try:
+        provider = _normalize_provider(provider)
+        context = _get_item_context(provider, item_id)
+        themerrdb_data = _get_themerrdb_data_for_context(context)
+        if not themerrdb_data or not themerrdb_data.get('youtube_theme_url'):
+            return jsonify({'error': 'No theme available in ThemerrDB'}), 404
+
+        youtube_url = themerrdb_data['youtube_theme_url']
+        audio_url = _extract_youtube_audio_url(youtube_url)
+        response = http_requests.get(audio_url, stream=True, timeout=30)
+        response.raise_for_status()
+        return Response(
+            _stream_http_response_chunks(response),
+            mimetype='audio/mpeg',
+            headers={'Cache-Control': 'no-cache'},
+        )
+    except yt_dlp.utils.DownloadError as exc:
+        msg = _clean_yt_dlp_error(exc)
+        logger.error('Failed to stream ThemerrDB theme preview for %s item %s: %s', provider, item_id, exc)
+        return jsonify({'error': f'ThemerrDB preview unavailable: {msg}'}), 502
+    except ValueError as exc:
+        return error_response('Invalid provider or item identifier', status_code=400, exc=exc)
+    except Exception as exc:
+        return error_response(f'Failed to preview ThemerrDB theme for {provider} item {item_id}', exc=exc)
+
+
+@app.route('/api/items/<provider>/<path:item_id>/theme/themerrdb', methods=['POST'])
+def download_provider_from_themerrdb(provider, item_id):
+    """Download a ThemerrDB theme for a provider item and save as theme.mp3."""
+    try:
+        provider = _normalize_provider(provider)
+        data = request.get_json(silent=True) or {}
+        overwrite = data.get('overwrite', False)
+
+        context = _get_item_context(provider, item_id)
+        local_path = _validate_local_media_path(context['local_path'])
+        if not local_path:
+            return jsonify({'error': 'Cannot determine local path for item'}), 404
+
+        theme_path = _theme_file_path(local_path)
+        if theme_path.exists() and theme_path.stat().st_size > 0 and not overwrite:
+            return jsonify({'error': 'Theme already exists', 'exists': True}), 409
+
+        themerrdb_data = _get_themerrdb_data_for_context(context)
+        if not themerrdb_data or not themerrdb_data.get('youtube_theme_url'):
+            return jsonify({'error': 'No theme available in ThemerrDB'}), 404
+
+        youtube_url = themerrdb_data['youtube_theme_url']
+        with tempfile.TemporaryDirectory(dir=YTDLP_WORKDIR) as tmpdir:
+            mp3_path = _download_youtube_theme_mp3(youtube_url, tmpdir)
+            local_path.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(mp3_path), str(theme_path))
+
+        logger.info('Downloaded ThemerrDB theme for %s item', provider)
+        send_pushover_notification('Theme Downloaded', f"{context['title']} theme downloaded from ThemerrDB")
+        item_dict, _ = _sync_cached_item_theme_state(provider, item_id)
+        return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
+    except yt_dlp.utils.DownloadError as exc:
+        msg = _clean_yt_dlp_error(exc)
+        logger.error('Failed ThemerrDB download for %s item %s: %s', provider, item_id, exc)
+        return jsonify({'error': f'ThemerrDB download failed: {msg}'}), 502
+    except ValueError as exc:
+        return error_response('Invalid provider or item identifier', status_code=400, exc=exc)
+    except Exception as exc:
+        return error_response(f'Failed to download ThemerrDB theme for {provider} item {item_id}', exc=exc)
 
 
 @app.route('/api/items/<provider>/<path:item_id>/theme/copy', methods=['POST'])
@@ -1834,38 +2158,16 @@ def download_provider_from_youtube(provider, item_id):
             return jsonify({'error': 'Theme already exists', 'exists': True}), 409
 
         with tempfile.TemporaryDirectory(dir=YTDLP_WORKDIR) as tmpdir:
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                'outtmpl': os.path.join(tmpdir, 'theme.%(ext)s'),
-                'quiet': True,
-                'no_warnings': True,
-                'noplaylist': True,
-                'match_filter': youtube_match_filter,
-                'max_filesize': MAX_UPLOAD_BYTES,
-                'js_runtimes': {'node': {}},
-                'remote_components': ['ejs:github'],
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([youtube_url])
-
-            mp3_files = list(Path(tmpdir).glob('*.mp3'))
-            if not mp3_files:
-                return jsonify({'error': 'Download failed: no MP3 file produced'}), 500
-
+            mp3_path = _download_youtube_theme_mp3(youtube_url, tmpdir)
             local_path.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(mp3_files[0]), str(theme_path))
+            shutil.move(str(mp3_path), str(theme_path))
 
         logger.info('Downloaded YouTube theme for %s item', provider)
         send_pushover_notification('Theme Downloaded', f"{context['title']} theme downloaded from YouTube")
         item_dict, _ = _sync_cached_item_theme_state(provider, item_id)
         return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
     except yt_dlp.utils.DownloadError as exc:
-        msg = str(exc).removeprefix('ERROR: ').strip()
+        msg = _clean_yt_dlp_error(exc)
         logger.error('Failed YouTube download for %s:%s: %s', provider, item_id, exc)
         return jsonify({'error': msg}), 500
     except ValueError as exc:

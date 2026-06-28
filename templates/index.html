@@ -191,6 +191,7 @@
         <div id="modal-download-preview" class="modal-preview hidden">
           <p class="preview-label">Preview Plex theme:</p>
           <audio id="preview-audio" controls class="audio-player"></audio>
+          <p id="preview-audio-error" class="error hidden"></p>
         </div>
         <div id="modal-download-overwrite" class="overwrite-warning hidden">
           <div class="warning-box">
@@ -205,7 +206,6 @@
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" onclick="closeModal('modal-download')">Cancel</button>
-        <button id="btn-preview-plex" class="btn btn-secondary" onclick="previewPlexTheme()">Preview</button>
         <button id="btn-confirm-download" class="btn btn-primary" onclick="confirmDownload()">Download</button>
       </div>
     </div>
