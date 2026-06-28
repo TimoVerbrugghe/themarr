@@ -46,7 +46,14 @@ def _youtube_retry_profiles():
 
 
 def _youtube_preview_ydl_opts(profile_overrides=None):
-    """Build yt-dlp options for extracting a preview audio stream URL."""
+    """Build yt-dlp options for extracting a preview audio stream URL.
+
+    NOTE: Do NOT add 'remote_components' here.  That option instructs yt-dlp
+    to fetch and execute JavaScript from an external source (e.g. GitHub) at
+    runtime, which is a supply-chain remote-code-execution risk in a server
+    process.  The bundled yt-dlp extractor is sufficient for standard YouTube
+    URLs.
+    """
     opts = {
         'format': 'bestaudio/best',
         'quiet': True,
@@ -54,8 +61,6 @@ def _youtube_preview_ydl_opts(profile_overrides=None):
         'noplaylist': True,
         'skip_download': True,
         'socket_timeout': 30,
-        'js_runtimes': {'node': {}},
-        'remote_components': ['ejs:github'],
     }
     if profile_overrides:
         opts.update(profile_overrides)
@@ -77,8 +82,6 @@ def _youtube_download_ydl_opts(tmpdir, profile_overrides=None):
         'noplaylist': True,
         'match_filter': youtube_match_filter,
         'max_filesize': MAX_UPLOAD_BYTES,
-        'js_runtimes': {'node': {}},
-        'remote_components': ['ejs:github'],
     }
     if profile_overrides:
         opts.update(profile_overrides)

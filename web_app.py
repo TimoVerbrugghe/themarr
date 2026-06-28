@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import tempfile
@@ -13,6 +14,7 @@ import hmac
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests as http_requests
 import yt_dlp
@@ -63,6 +65,13 @@ LIBRARY_PAGE_SIZE = LIBRARY_PAGE_SIZE_DEFAULT
 LIBRARY_PAGE_SIZE_MAX_VALUE = LIBRARY_PAGE_SIZE_MAX
 app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_BYTES
 
+# Allowed CDN hosts for yt-dlp resolved audio stream proxying (SSRF guard).
+# yt-dlp returns googlevideo.com URLs for YouTube streams under normal operation.
+_ALLOWED_AUDIO_STREAM_HOSTS = {'googlevideo.com', 'youtube.com', 'googleusercontent.com'}
+
+# Pattern for validating ThemerrDB / external media database IDs before interpolation.
+_EXTERNAL_ID_RE = re.compile(r'^[A-Za-z0-9_\-]{1,64}$')
+
 # In-memory cache for library items, warmed at startup to make first page loads instant.
 _library_cache: dict = {}        # {section_id: [item_dict, ...]}
 _library_cache_lock = threading.Lock()
@@ -93,9 +102,10 @@ _startup_warmup_lock = threading.Lock()
 _generated_api_auth_token = secrets.token_urlsafe(32)
 if not (os.getenv('API_AUTH_TOKEN') or '').strip():
     logger.warning(
-        'API_AUTH_TOKEN is not set; generated startup token: %s',
-        _generated_api_auth_token,
+        'API_AUTH_TOKEN is not set; a one-time startup token was generated. '
+        'Find it by running: docker logs <container> 2>&1 | grep "startup token"',
     )
+    logger.warning('API_AUTH_TOKEN startup token: %s', _generated_api_auth_token)
 
 def error_response(message, status_code=500, exc=None):
     """Return a safe JSON error response while logging internal details."""
@@ -139,6 +149,16 @@ def _check_webhook_basic_auth():
     expected_username = (os.getenv('WEBHOOK_USERNAME') or '').strip()
     expected_password = (os.getenv('WEBHOOK_PASSWORD') or '').strip()
     if not expected_username and not expected_password:
+        return None
+    if not expected_username or not expected_password:
+        # Partial configuration: only one credential is set, which would allow
+        # authentication with an empty counterpart.  Treat as misconfigured and
+        # skip auth rather than silently accepting requests with a half-check.
+        logger.warning(
+            'Webhook Basic Auth is partially configured (only one of '
+            'WEBHOOK_USERNAME / WEBHOOK_PASSWORD is set); authentication skipped. '
+            'Set both variables to enable webhook Basic Auth.'
+        )
         return None
     auth = request.authorization
     if not auth:
@@ -238,10 +258,7 @@ def jellyfin_session_get(jellyfin, path, **kwargs):
     """Perform an authenticated GET against Jellyfin."""
     headers = dict(kwargs.pop('headers', {}) or {})
     headers['X-Emby-Token'] = jellyfin['api_key']
-    if path.startswith('http://') or path.startswith('https://'):
-        url = path
-    else:
-        url = f"{jellyfin['url']}{path}"
+    url = f"{jellyfin['url']}{path}"
     return http_requests.get(url, headers=headers, timeout=JELLYFIN_TIMEOUT_SECONDS, **kwargs)
 
 
@@ -249,10 +266,7 @@ def jellyfin_session_post(jellyfin, path, **kwargs):
     """Perform an authenticated POST against Jellyfin."""
     headers = dict(kwargs.pop('headers', {}) or {})
     headers['X-Emby-Token'] = jellyfin['api_key']
-    if path.startswith('http://') or path.startswith('https://'):
-        url = path
-    else:
-        url = f"{jellyfin['url']}{path}"
+    url = f"{jellyfin['url']}{path}"
     return http_requests.post(url, headers=headers, timeout=JELLYFIN_TIMEOUT_SECONDS, **kwargs)
 
 
@@ -407,7 +421,7 @@ def _get_item_context(provider, item_id):
 def get_themerrdb_theme_for_external_ids(item_type, external_ids):
     """Resolve ThemerrDB theme metadata from external IDs for a media type."""
     themerr_item_type = 'tv_shows' if item_type == 'show' else 'movies'
-    tmdb_id = external_ids.get('tmdb') or external_ids.get('tvdb')
+    tmdb_id = external_ids.get('tmdb')
     cache_ids = {
         external_ids.get('imdb'),
         external_ids.get('tmdb'),
@@ -474,7 +488,13 @@ def query_themerrdb(item_type, database, external_id):
     """
     if not external_id:
         return None
-    
+
+    # Validate the external ID before interpolating it into a URL to prevent
+    # path traversal or header injection via a compromised upstream metadata source.
+    if not _EXTERNAL_ID_RE.match(str(external_id)):
+        logger.warning('Rejecting malformed ThemerrDB external_id (value redacted)')
+        return None
+
     # Check cache first
     cache_hit, cached = _get_cached_themerrdb(external_id)
     if cache_hit:
@@ -598,6 +618,25 @@ def _extract_youtube_audio_url(youtube_url):
     raise yt_dlp.utils.DownloadError(' | '.join(errors))
 
 
+def _is_valid_audio_stream_url(url):
+    """Return True when a yt-dlp resolved stream URL is from an allowed CDN host.
+
+    This guards against SSRF: yt-dlp should only return googlevideo.com (or
+    similar Google CDN) URLs for YouTube content.  Any other host is rejected.
+    """
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in {'https', 'http'}:
+            return False
+        hostname = (parsed.hostname or '').lower()
+        return any(
+            hostname == h or hostname.endswith('.' + h)
+            for h in _ALLOWED_AUDIO_STREAM_HOSTS
+        )
+    except ValueError:
+        return False
+
+
 def _download_youtube_theme_mp3(youtube_url, tmpdir):
     """Download YouTube audio as MP3 with client-profile fallback retries."""
     errors = []
@@ -623,8 +662,8 @@ def is_valid_upload(upload_file):
         return False, ('Only MP3 uploads are supported', 400)
 
     content_type = (upload_file.content_type or '').lower()
-    if content_type and content_type not in ALLOWED_UPLOAD_TYPES:
-        return False, ('Uploaded file must be an MP3', 400)
+    if not content_type or content_type not in ALLOWED_UPLOAD_TYPES:
+        return False, ('Uploaded file must be an MP3 (audio/mpeg)', 400)
 
     return True, None
 
@@ -732,7 +771,7 @@ def item_to_dict(item, theme_dirs=None, provider='plex', library_id=None):
     # Extract external IDs for ThemerrDB availability check
     external_ids = extract_external_ids(item)
     has_themerrdb_theme = False
-    if external_ids['imdb'] or external_ids['tvdb']:
+    if external_ids['imdb'] or external_ids['tvdb'] or external_ids['tmdb']:
         themerrdb_data = get_themerrdb_theme(item)
         has_themerrdb_theme = themerrdb_data is not None
 
@@ -1014,17 +1053,28 @@ def _kick_off_poster_cache_warmup():
 
 def _sync_cached_item(item):
     """Update an item's cached entry in-place after local theme state changes."""
-    updated_item = item_to_dict(item)
     updated = False
+    updated_item = None
     with _library_cache_lock:
         for section_items in _library_cache.values():
             for index, cached_item in enumerate(section_items):
                 if str(cached_item.get('ratingKey')) == str(item.ratingKey):
+                    # Preserve library_id and provider from the existing cached entry
+                    # so that _sync_cached_item never overwrites them with None defaults.
+                    existing_library_id = cached_item.get('library_id')
+                    existing_provider = cached_item.get('provider') or 'plex'
+                    updated_item = item_to_dict(
+                        item,
+                        provider=existing_provider,
+                        library_id=existing_library_id,
+                    )
                     section_items[index] = updated_item
                     updated = True
                     break
             if updated:
                 break
+    if updated_item is None:
+        updated_item = item_to_dict(item)
     return updated_item, updated
 
 
@@ -1146,7 +1196,15 @@ def _warm_library_cache():
                         path = Path(local_path)
                         base_paths.add(str(path.parent if _is_video_file_path(path) else path))
 
-                    theme_dirs = scan_local_theme_dirs(base_paths) if base_paths else {}
+                # Perform filesystem I/O outside the cache lock to avoid blocking
+                # concurrent cache readers while scanning potentially slow mounts.
+                theme_dirs = scan_local_theme_dirs(base_paths) if base_paths else {}
+
+                with _library_cache_lock:
+                    # Re-read cached_items in case it was replaced between releases.
+                    cached_items = _library_cache.get(cache_key)
+                    if cached_items is None:
+                        return
                     updated_items = []
                     for cached_item in cached_items:
                         updated_item = dict(cached_item)
@@ -1220,10 +1278,16 @@ def health():
 
 @app.route('/api/settings/runtime')
 def get_settings_runtime():
-    """Expose runtime settings needed by the UI settings page."""
-    token, is_generated = _get_api_auth_token()
+    """Expose non-sensitive runtime settings needed by the UI settings page.
+
+    The API auth token is intentionally not returned here because this endpoint
+    is accessible without authentication.  The token is emitted to the server
+    log at startup (when auto-generated) and must be entered manually into the
+    browser UI where it is stored in localStorage.
+    """
+    _, is_generated = _get_api_auth_token()
     return jsonify({
-        'api_auth_token': token,
+        'api_auth_token_configured': not is_generated,
         'api_auth_token_generated': is_generated,
         'background_worker_count': BACKGROUND_WORKER_COUNT,
         'library_page_size': LIBRARY_PAGE_SIZE,
@@ -1579,10 +1643,15 @@ def upload_theme(rating_key):
             return jsonify({'error': message}), status_code
 
         local_path.mkdir(parents=True, exist_ok=True)
-        upload_file.save(str(theme_path))
-        if theme_path.stat().st_size > MAX_UPLOAD_BYTES:
-            theme_path.unlink(missing_ok=True)
-            return jsonify({'error': 'Uploaded file is too large'}), 413
+        tmp_path = theme_path.with_suffix('.mp3.tmp')
+        try:
+            upload_file.save(str(tmp_path))
+            if tmp_path.stat().st_size > MAX_UPLOAD_BYTES:
+                return jsonify({'error': 'Uploaded file is too large'}), 413
+            tmp_path.rename(theme_path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
         logger.info('Uploaded theme for %s to %s', item.title, theme_path)
         send_pushover_notification('Theme Uploaded', f'{item.title} theme uploaded')
@@ -1717,8 +1786,15 @@ def preview_themerrdb_theme(rating_key):
             return jsonify({'error': 'No theme available in ThemerrDB'}), 404
         
         youtube_url = themerrdb_data['youtube_theme_url']
-        
+
+        if not is_valid_youtube_url(youtube_url):
+            logger.warning('ThemerrDB returned an invalid YouTube URL for item %s', rating_key)
+            return jsonify({'error': 'ThemerrDB returned an invalid theme URL'}), 502
+
         audio_url = _extract_youtube_audio_url(youtube_url)
+        if not _is_valid_audio_stream_url(audio_url):
+            logger.warning('yt-dlp returned an unexpected stream host for item %s', rating_key)
+            return jsonify({'error': 'Resolved audio stream URL is not from an allowed host'}), 502
         response = http_requests.get(audio_url, stream=True, timeout=30)
         response.raise_for_status()
         return Response(
@@ -1758,7 +1834,11 @@ def download_from_themerrdb(rating_key):
             return jsonify({'error': 'No theme available in ThemerrDB'}), 404
         
         youtube_url = themerrdb_data['youtube_theme_url']
-        
+
+        if not is_valid_youtube_url(youtube_url):
+            logger.warning('ThemerrDB returned an invalid YouTube URL for item %s', rating_key)
+            return jsonify({'error': 'ThemerrDB returned an invalid theme URL'}), 502
+
         with tempfile.TemporaryDirectory(dir=YTDLP_WORKDIR) as tmpdir:
             mp3_path = _download_youtube_theme_mp3(youtube_url, tmpdir)
             local_path.mkdir(parents=True, exist_ok=True)
@@ -1893,7 +1973,15 @@ def preview_provider_themerrdb_theme(provider, item_id):
             return jsonify({'error': 'No theme available in ThemerrDB'}), 404
 
         youtube_url = themerrdb_data['youtube_theme_url']
+
+        if not is_valid_youtube_url(youtube_url):
+            logger.warning('ThemerrDB returned an invalid YouTube URL for %s item %s', provider, item_id)
+            return jsonify({'error': 'ThemerrDB returned an invalid theme URL'}), 502
+
         audio_url = _extract_youtube_audio_url(youtube_url)
+        if not _is_valid_audio_stream_url(audio_url):
+            logger.warning('yt-dlp returned an unexpected stream host for %s item %s', provider, item_id)
+            return jsonify({'error': 'Resolved audio stream URL is not from an allowed host'}), 502
         response = http_requests.get(audio_url, stream=True, timeout=30)
         response.raise_for_status()
         return Response(
@@ -1933,6 +2021,11 @@ def download_provider_from_themerrdb(provider, item_id):
             return jsonify({'error': 'No theme available in ThemerrDB'}), 404
 
         youtube_url = themerrdb_data['youtube_theme_url']
+
+        if not is_valid_youtube_url(youtube_url):
+            logger.warning('ThemerrDB returned an invalid YouTube URL for %s item %s', provider, item_id)
+            return jsonify({'error': 'ThemerrDB returned an invalid theme URL'}), 502
+
         with tempfile.TemporaryDirectory(dir=YTDLP_WORKDIR) as tmpdir:
             mp3_path = _download_youtube_theme_mp3(youtube_url, tmpdir)
             local_path.mkdir(parents=True, exist_ok=True)
@@ -2029,10 +2122,15 @@ def upload_provider_theme(provider, item_id):
             return jsonify({'error': message}), status_code
 
         local_path.mkdir(parents=True, exist_ok=True)
-        upload_file.save(str(theme_path))
-        if theme_path.stat().st_size > MAX_UPLOAD_BYTES:
-            theme_path.unlink(missing_ok=True)
-            return jsonify({'error': 'Uploaded file is too large'}), 413
+        tmp_path = theme_path.with_suffix('.mp3.tmp')
+        try:
+            upload_file.save(str(tmp_path))
+            if tmp_path.stat().st_size > MAX_UPLOAD_BYTES:
+                return jsonify({'error': 'Uploaded file is too large'}), 413
+            tmp_path.rename(theme_path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
         logger.info('Uploaded theme for %s item', provider)
         send_pushover_notification('Theme Uploaded', f"{context['title']} theme uploaded")

@@ -187,6 +187,11 @@
                   <code id="runtime-api-token">Loading…</code>
                   <button class="btn btn-secondary btn-sm" type="button" onclick="copyApiToken()">Copy</button>
                   <div id="runtime-api-token-source">Loading…</div>
+                  <div style="margin-top:0.5rem; display:flex; gap:0.5rem; align-items:center;">
+                    <input id="api-token-input" type="password" placeholder="Paste token from server logs…"
+                           style="flex:1; font-family:monospace; font-size:0.85rem;" autocomplete="off" />
+                    <button class="btn btn-primary btn-sm" type="button" onclick="saveApiToken()">Save</button>
+                  </div>
                 </td>
               </tr>
               <tr><td><strong>Background workers</strong></td><td colspan="2"><code id="runtime-worker-count">—</code></td></tr>

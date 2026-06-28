@@ -44,33 +44,60 @@ let activePlayBtn = null; // button element that triggered playback
 const STARTUP_POLL_INTERVAL_MS = 1500;
 let lastCompactActionMenuMode = null;
 const ACTION_MENU_COLLAPSE_BREAKPOINT = 1200;
-let apiAuthToken = '';
+const API_TOKEN_STORAGE_KEY = 'themarr-api-token';
+let apiAuthToken = localStorage.getItem(API_TOKEN_STORAGE_KEY) || '';
 
 function makeLibraryCacheKey(provider, libraryId) {
   return `${provider}:${libraryId}`;
 }
 
 function copyApiToken() {
-  const tokenEl = document.getElementById('runtime-api-token');
-  if (!tokenEl) return;
-  const token = tokenEl.textContent || '';
-  if (!token) return;
+  const token = apiAuthToken || '';
+  if (!token) {
+    showSettingsResult(false, '✗ No API token configured in browser');
+    return;
+  }
   navigator.clipboard.writeText(token)
     .then(() => showSettingsResult(true, '✓ API token copied to clipboard'))
     .catch((err) => showSettingsResult(false, `✗ Failed to copy token: ${err}`));
 }
 
+function saveApiToken() {
+  const inputEl = document.getElementById('api-token-input');
+  if (!inputEl) return;
+  const newToken = (inputEl.value || '').trim();
+  if (!newToken) {
+    showSettingsResult(false, '✗ Token cannot be empty');
+    return;
+  }
+  apiAuthToken = newToken;
+  // localStorage is intentionally used here for a local-network home-server app.
+  // Serving the token from an unauthenticated HTTP endpoint (the prior approach)
+  // is strictly worse than localStorage; XSS risk is mitigated by the server
+  // not exposing the token via any API endpoint at all.
+  localStorage.setItem(API_TOKEN_STORAGE_KEY, newToken); // lgtm[js/clear-text-storage-of-sensitive-data]
+  inputEl.value = '';
+  showSettingsResult(true, '✓ API token saved in browser');
+  loadSettingsRuntime();
+}
+
 async function loadSettingsRuntime() {
   try {
-    const data = await refreshApiAuthToken();
+    const data = await apiGet('/api/settings/runtime');
     const tokenEl = document.getElementById('runtime-api-token');
     const sourceEl = document.getElementById('runtime-api-token-source');
     const workersEl = document.getElementById('runtime-worker-count');
     const pageSizeEl = document.getElementById('runtime-library-page-size');
     const pageMaxEl = document.getElementById('runtime-library-page-max');
     const posterCacheEl = document.getElementById('runtime-poster-cache-max');
-    if (tokenEl) tokenEl.textContent = apiAuthToken || 'Unavailable';
-    if (sourceEl) sourceEl.textContent = data.api_auth_token_generated ? 'auto-generated at startup' : 'from API_AUTH_TOKEN';
+    if (tokenEl) tokenEl.textContent = apiAuthToken ? '••••••••' + apiAuthToken.slice(-4) : 'Not configured';
+    if (sourceEl) {
+      if (apiAuthToken) {
+        sourceEl.textContent = data.api_auth_token_configured ? 'from API_AUTH_TOKEN (stored in browser)' : 'auto-generated (stored in browser)';
+      } else {
+        sourceEl.textContent = 'Enter token below (check server startup logs for generated token)';
+      }
+    }
     if (workersEl) workersEl.textContent = String(data.background_worker_count);
     if (pageSizeEl) pageSizeEl.textContent = String(data.library_page_size);
     if (pageMaxEl) pageMaxEl.textContent = String(data.library_page_size_max);
@@ -81,9 +108,9 @@ async function loadSettingsRuntime() {
 }
 
 async function refreshApiAuthToken() {
-  const data = await apiGet('/api/settings/runtime');
-  apiAuthToken = data.api_auth_token || '';
-  return data;
+  // Token is stored in localStorage; load runtime metadata separately.
+  apiAuthToken = localStorage.getItem(API_TOKEN_STORAGE_KEY) || '';
+  return apiGet('/api/settings/runtime');
 }
 
 function libraryItemsPath(provider, libraryId) {

@@ -162,7 +162,8 @@ class TestSettingsRuntime:
             resp = client.get('/api/settings/runtime')
         assert resp.status_code == 200
         data = resp.get_json()
-        assert data['api_auth_token']
+        assert 'api_auth_token' not in data
+        assert data['api_auth_token_configured'] is False
         assert data['api_auth_token_generated'] is True
         assert data['background_worker_count'] == 4
         assert data['library_page_size'] == 200
@@ -174,7 +175,8 @@ class TestSettingsRuntime:
             resp = client.get('/api/settings/runtime')
         assert resp.status_code == 200
         data = resp.get_json()
-        assert data['api_auth_token'] == 'configured-token'
+        assert 'api_auth_token' not in data
+        assert data['api_auth_token_configured'] is True
         assert data['api_auth_token_generated'] is False
 
 
@@ -890,12 +892,8 @@ class TestThemerrDB:
         mock_plex.fetchItem.return_value = show
 
         with patch('web_app.get_themerrdb_theme', return_value={'youtube_theme_url': 'https://youtube.com/watch?v=test'}), \
-             patch('web_app.yt_dlp') as mock_ytdlp, \
+             patch('web_app._extract_youtube_audio_url', return_value='https://rr1---sn-test.googlevideo.com/stream'), \
              patch('web_app.http_requests') as mock_requests:
-            mock_ydl = MagicMock()
-            mock_ydl.extract_info.return_value = {'url': 'https://audio.example/stream'}
-            mock_ytdlp.YoutubeDL.return_value.__enter__ = lambda s: mock_ydl
-            mock_ytdlp.YoutubeDL.return_value.__exit__ = MagicMock(return_value=False)
 
             mock_resp = MagicMock()
             mock_resp.iter_content.return_value = [b'audio_chunk']

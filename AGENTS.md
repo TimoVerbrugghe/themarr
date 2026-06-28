@@ -5,10 +5,23 @@ This repository is prepared for AI coding agents. Use this guide for safe, consi
 ## Project Overview
 
 - **Language**: Python 3.11
-- **Runtime**: Docker / Docker Compose
+- **Runtime**: Docker / Docker Compose (base image: `python:3.11-slim`)
 - **Web UI entry point**: `web_app.py` (Flask, port 8080)
-- **CLI entry point**: `plex_theme_downloader.py`
 - **Goal**: Manage theme music (`theme.mp3`) for Plex and Jellyfin libraries via Web UI (Plex, ThemerrDB, and YouTube download sources)
+
+## Application Structure
+
+The application is organized into a Flask entry point plus a supporting `app/` package:
+
+| File/Directory | Purpose |
+|---|---|
+| `web_app.py` | Flask app — all HTTP routes, request handling, cache management |
+| `app/media_utils.py` | Filesystem path validation, upload size/type constants, theme directory scanning |
+| `app/external_ids.py` | IMDB/TMDB/TVDB ID extraction for Plex and Jellyfin items |
+| `app/youtube_utils.py` | YouTube URL validation, yt-dlp option builders, stream helpers |
+| `app/plex_utils.py` | Plex server connection (`get_plex()`), library path helpers |
+| `app/jellyfin_utils.py` | Jellyfin connection helpers, media path resolution, provider normalization |
+| `tests/test_web_app.py` | Unit tests (111 tests, all must pass) |
 
 ## Setup and Validation Commands
 
@@ -17,6 +30,7 @@ Run from repo root:
 ```bash
 # Syntax check
 python3 -m py_compile web_app.py
+python3 -m py_compile app/*.py
 
 # Validate compose file
 docker compose config
@@ -34,12 +48,13 @@ Primary environment variables are defined in `.env.example`:
 
 - `PLEX_URL`, `PLEX_TOKEN` — Plex server credentials
 - `JELLYFIN_URL`, `JELLYFIN_API_KEY`, `JELLYFIN_USER_ID` — Jellyfin server credentials/user context
-- `TV_SHOWS_HOST_PATH`, `MOVIES_HOST_PATH` — host paths mounted into container
-- `FLASK_DEBUG` — Flask debug mode
+- `TV_SHOWS_HOST_PATH`, `MOVIES_HOST_PATH` — host paths mounted into container (**security boundary**: constrains filesystem write operations)
+- `FLASK_DEBUG` — Flask debug mode (never enable in production)
 - `DEFAULT_THEME` — default UI theme: `dark` or `light`
 - `DEFAULT_VIEW` — default library view: `list` or `grid`
+- `API_AUTH_TOKEN` — bearer token protecting mutating API endpoints; auto-generated and logged at startup when not set
 - `PUSHOVER_APP_TOKEN`, `PUSHOVER_USER_KEY` — optional Pushover notifications
-- `WEBHOOK_USERNAME`, `WEBHOOK_PASSWORD` — optional webhook Basic Auth
+- `WEBHOOK_USERNAME`, `WEBHOOK_PASSWORD` — optional webhook Basic Auth (both must be set)
 - `PLEX_RETRY_ATTEMPTS`, `PLEX_RETRY_DELAY` — webhook retry tuning
 
 ## Key Files
@@ -47,6 +62,7 @@ Primary environment variables are defined in `.env.example`:
 | File | Purpose |
 |---|---|
 | `web_app.py` | Flask REST API + Web UI backend |
+| `app/` | Supporting modules (see Application Structure above) |
 | `templates/index.html` | Single-page web UI shell |
 | `static/css/style.css` | Sonarr-inspired dark/light theme CSS |
 | `static/js/app.js` | Frontend JS (library browser, modals, multi-select, settings) |
@@ -62,6 +78,14 @@ Primary environment variables are defined in `.env.example`:
 - Preserve Docker-first workflow and existing environment variable names.
 - Update `README.md` when behavior, setup, or configuration changes.
 - Re-run validation commands after edits.
+- When modifying `app/` modules, check that all imports in `web_app.py` still resolve correctly.
+
+## Security Notes
+
+- **API auth token**: never returned by the unauthenticated `GET /api/settings/runtime` endpoint; stored in `localStorage` by the UI after the user enters it manually.
+- **Media root validation**: `TV_SHOWS_HOST_PATH` / `MOVIES_HOST_PATH` are security controls — set them to constrain filesystem write operations to known library directories.
+- **yt-dlp**: `remote_components` must NOT be enabled (supply-chain risk — fetches and executes JS from GitHub at runtime).
+- **ThemerrDB URLs**: always validate with `is_valid_youtube_url()` before passing to yt-dlp.
 
 ## Screenshot Rule
 

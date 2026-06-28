@@ -16,7 +16,7 @@ services:
     cpus: 1.00
     # tmpfs for runtime directories (writable while root fs is read-only)
     tmpfs:
-      - /run:rw,exec,nosuid,nodev,size=64m
+      - /run:rw,noexec,nosuid,nodev,size=64m
       - /tmp:rw,noexec,nosuid,nodev,size=512m
     environment:
       PLEX_URL: ${PLEX_URL}
