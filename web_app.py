@@ -13,13 +13,32 @@ import hmac
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from urllib.parse import urlparse
 
 import requests as http_requests
 import yt_dlp
 from flask import Flask, Response, jsonify, render_template, request, send_file
-from plexapi.server import PlexServer
-from werkzeug.utils import safe_join
+
+from app.media_utils import (
+    MAX_UPLOAD_BYTES, ALLOWED_UPLOAD_TYPES, VIDEO_FILE_EXTENSIONS,
+    _is_video_file_path, _configured_media_roots, _is_within_root,
+    _validate_local_media_path, _theme_file_path, scan_local_theme_dirs,
+)
+from app.external_ids import (
+    _normalize_external_id, extract_external_ids, extract_jellyfin_external_ids,
+)
+from app.youtube_utils import (
+    ALLOWED_YOUTUBE_HOSTS, MAX_YOUTUBE_DURATION_SECONDS,
+    is_valid_youtube_url, youtube_match_filter, _youtube_retry_profiles,
+    _youtube_preview_ydl_opts, _youtube_download_ydl_opts,
+    _clean_yt_dlp_error, _stream_http_response_chunks,
+)
+from app.plex_utils import (
+    get_plex, plex_session_get, get_section_base_paths,
+    get_item_local_path, get_validated_plex_local_path,
+)
+from app.jellyfin_utils import (
+    jellyfin_is_configured, get_jellyfin, get_jellyfin_item_local_path, _normalize_provider,
+)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -27,19 +46,11 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 YTDLP_WORKDIR = Path(tempfile.gettempdir()) / 'themarr_yt_dlp_work'
 YTDLP_WORKDIR.mkdir(parents=True, exist_ok=True)
-MAX_UPLOAD_BYTES = 25 * 1024 * 1024
-MAX_YOUTUBE_DURATION_SECONDS = 15 * 60
 MAX_BULK_ITEMS = 100
 ASSET_VERSION = str(int(time.time()))
 PLEX_RETRY_ATTEMPTS_DEFAULT = 10
 PLEX_RETRY_DELAY_DEFAULT = 30  # seconds between retry attempts
 JELLYFIN_TIMEOUT_SECONDS = 30
-ALLOWED_UPLOAD_TYPES = {'audio/mpeg', 'audio/mp3', 'application/octet-stream'}
-ALLOWED_YOUTUBE_HOSTS = {'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'}
-VIDEO_FILE_EXTENSIONS = {
-    '.3gp', '.asf', '.avi', '.divx', '.flv', '.iso', '.m2ts', '.m4v', '.mkv',
-    '.mov', '.mp4', '.mpeg', '.mpg', '.mts', '.ts', '.vob', '.webm', '.wmv',
-}
 THEMERRDB_API_BASE = 'https://app.lizardbyte.dev/ThemerrDB'
 THEMERRDB_CACHE_TTL = 24 * 3600  # 24 hours
 LIBRARY_PAGE_SIZE_DEFAULT = 200
@@ -223,36 +234,6 @@ def _ensure_startup_warmup():
     _kick_off_cache_warmup()
 
 
-def get_plex():
-    """Get authenticated PlexServer instance from environment variables."""
-    plex_url = os.getenv('PLEX_URL')
-    plex_token = os.getenv('PLEX_TOKEN')
-    if not plex_url or not plex_token:
-        raise ValueError('PLEX_URL and PLEX_TOKEN environment variables must be set')
-    return PlexServer(plex_url.rstrip('/'), plex_token)
-
-
-def jellyfin_is_configured():
-    """Return True when Jellyfin credentials are configured."""
-    jellyfin_url = (os.getenv('JELLYFIN_URL') or '').strip()
-    jellyfin_api_key = (os.getenv('JELLYFIN_API_KEY') or '').strip()
-    return bool(jellyfin_url and jellyfin_api_key)
-
-
-def get_jellyfin():
-    """Get Jellyfin connection settings from environment variables."""
-    jellyfin_url = (os.getenv('JELLYFIN_URL') or '').strip()
-    jellyfin_api_key = (os.getenv('JELLYFIN_API_KEY') or '').strip()
-    jellyfin_user_id = (os.getenv('JELLYFIN_USER_ID') or '').strip() or None
-    if not jellyfin_url or not jellyfin_api_key:
-        raise ValueError('JELLYFIN_URL and JELLYFIN_API_KEY environment variables must be set')
-    return {
-        'url': jellyfin_url.rstrip('/'),
-        'api_key': jellyfin_api_key,
-        'user_id': jellyfin_user_id,
-    }
-
-
 def jellyfin_session_get(jellyfin, path, **kwargs):
     """Perform an authenticated GET against Jellyfin."""
     headers = dict(kwargs.pop('headers', {}) or {})
@@ -298,83 +279,6 @@ def get_jellyfin_user_id(jellyfin):
 
         _jellyfin_user_id_cache['value'] = user_id
         return user_id
-
-
-def get_jellyfin_item_local_path(item):
-    """Get local filesystem path for a Jellyfin item dict."""
-    raw_path = item.get('Path')
-    if not raw_path:
-        return None
-    candidate = Path(raw_path)
-    item_type = (item.get('Type') or '').lower()
-    if item_type == 'movie' and _is_video_file_path(candidate):
-        return candidate.parent
-    return candidate
-
-
-def _is_video_file_path(path):
-    """Return True when a path appears to reference a video file."""
-    return path.suffix.lower() in VIDEO_FILE_EXTENSIONS
-
-
-def _configured_media_roots():
-    """Return configured media root paths used to constrain filesystem operations."""
-    roots = []
-    for env_name in ('TV_SHOWS_HOST_PATH', 'MOVIES_HOST_PATH'):
-        raw_value = (os.getenv(env_name) or '').strip()
-        if not raw_value:
-            continue
-        try:
-            roots.append(Path(raw_value).resolve(strict=False))
-        except OSError:
-            logger.warning('Ignoring invalid %s path configuration', env_name)
-    return roots
-
-
-def _is_within_root(path, root):
-    """Return True when *path* is at or below *root*."""
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
-
-
-def _validate_local_media_path(local_path):
-    """Normalize and validate local media path for safe filesystem usage."""
-    if local_path is None:
-        return None
-
-    local_path_str = str(local_path)
-    sanitized = safe_join('/', local_path_str.lstrip('/'))
-    if sanitized is None:
-        raise ValueError('Invalid local media path')
-
-    normalized = os.path.normpath(sanitized)
-    if not normalized.startswith('/'):
-        raise ValueError('Invalid local media path')
-
-    roots = _configured_media_roots()
-    normalized_path = Path(normalized)
-    if roots and not any(_is_within_root(normalized_path, root) for root in roots):
-        raise ValueError('Item path is outside configured media roots')
-
-    return normalized_path
-
-
-def _theme_file_path(local_path):
-    """Return validated theme file path for a validated media directory."""
-    validated_local_path = _validate_local_media_path(local_path)
-    if not validated_local_path:
-        return None
-    return validated_local_path / 'theme.mp3'
-
-
-def _normalize_provider(provider):
-    normalized = (provider or '').strip().lower()
-    if normalized not in {'plex', 'jellyfin'}:
-        raise ValueError('provider must be either "plex" or "jellyfin"')
-    return normalized
 
 
 def _serialize_jellyfin_item(item, library_id, theme_dirs=None):
@@ -500,54 +404,6 @@ def _get_item_context(provider, item_id):
         'local_path': local_path,
         'has_plex_theme': False,
     }
-def plex_session_get(plex, url, **kwargs):
-    """Fetch Plex media using plexapi's authenticated session."""
-    # plexapi does not expose a higher-level helper for arbitrary media proxying,
-    # so these web endpoints intentionally reuse its authenticated requests session.
-    return plex._session.get(url, **kwargs)
-
-
-def extract_external_ids(item):
-    """Extract external IDs (IMDB/TVDB) from Plex item guids.
-    
-    Returns dict with 'imdb' and 'tvdb' keys (None if not found).
-    """
-    ids = {'imdb': None, 'tvdb': None, 'tmdb': None}
-    for guid in getattr(item, 'guids', []):
-        if isinstance(guid, dict):
-            guid_id = guid.get('id', '')
-        else:
-            guid_id = getattr(guid, 'id', '') or ''
-        if guid_id.startswith('imdb://'):
-            ids['imdb'] = guid_id.replace('imdb://', '')
-        elif guid_id.startswith('tmdb://'):
-            ids['tmdb'] = guid_id.replace('tmdb://', '')
-        elif guid_id.startswith('tvdb://'):
-            ids['tvdb'] = guid_id.replace('tvdb://', '')
-    return ids
-
-
-def _normalize_external_id(value):
-    """Normalize provider ID values to a stripped string or None."""
-    if isinstance(value, (list, tuple)):
-        value = value[0] if value else None
-    if value is None:
-        return None
-    value = str(value).strip()
-    return value or None
-
-
-def extract_jellyfin_external_ids(item):
-    """Extract external IDs (IMDB/TMDB/TVDB) from a Jellyfin item dict."""
-    provider_ids = item.get('ProviderIds') if isinstance(item, dict) else {}
-    provider_ids = provider_ids if isinstance(provider_ids, dict) else {}
-    return {
-        'imdb': _normalize_external_id(provider_ids.get('Imdb')),
-        'tmdb': _normalize_external_id(provider_ids.get('Tmdb')),
-        'tvdb': _normalize_external_id(provider_ids.get('Tvdb')),
-    }
-
-
 def get_themerrdb_theme_for_external_ids(item_type, external_ids):
     """Resolve ThemerrDB theme metadata from external IDs for a media type."""
     themerr_item_type = 'tv_shows' if item_type == 'show' else 'movies'
@@ -724,171 +580,6 @@ def _check_plex_preview_availability(item):
     except Exception as exc:
         logger.warning('Unable to stream Plex preview for item %s: %s', getattr(item, 'ratingKey', '?'), exc)
         return {'available': False, 'reason': 'Unable to stream the Plex preview right now.'}
-
-
-def scan_local_theme_dirs(base_paths):
-    """Scan base directories and return a dict mapping directory path -> theme.mp3 size.
-
-    Supports both library root paths and item-directory paths as scan inputs.
-    This keeps callers fast while allowing mixed cache hydration strategies.
-    """
-    theme_dirs = {}
-    for base in base_paths:
-        try:
-            base_path = Path(base)
-            direct_theme = base_path / 'theme.mp3'
-            if direct_theme.is_file():
-                size = direct_theme.stat().st_size
-                if size > 0:
-                    theme_dirs[str(base_path)] = size
-
-            for p in base_path.glob('*/theme.mp3'):
-                try:
-                    size = p.stat().st_size
-                    if size > 0:
-                        theme_dirs[str(p.parent)] = size
-                except OSError:
-                    pass
-        except Exception:
-            pass
-    return theme_dirs
-
-
-def get_section_base_paths(plex):
-    """Return the unique set of root directory paths for all show/movie sections.
-
-    Uses Plex's reported ``locations`` for each section so we don't need any
-    path-related environment variables — the caller must mount library paths at
-    the same container path as the Plex container.
-    """
-    paths = set()
-    try:
-        for section in plex.library.sections():
-            if section.type in ('show', 'movie'):
-                for loc in section.locations:
-                    paths.add(loc)
-    except Exception:
-        pass
-    return paths
-
-
-def get_item_local_path(item):
-    """Get the local filesystem path for a Plex library item.
-
-    Uses the path reported by Plex directly — this works when the container
-    mounts the same library paths at the same locations as the Plex container.
-    """
-    if not hasattr(item, 'locations') or not item.locations:
-        return None
-
-    for loc in item.locations:
-        candidate = Path(loc)
-        if item.type == 'show':
-            # Avoid filesystem stat calls here (especially on NFS). Plex already
-            # gives us the canonical library path; we use it directly.
-            return candidate
-        if item.type == 'movie':
-            # Movie locations may be either file paths or folder paths.
-            return candidate.parent if _is_video_file_path(candidate) else candidate
-
-    return None
-
-
-def get_validated_plex_local_path(item):
-    """Get and validate local filesystem path for a Plex library item."""
-    local_path = get_item_local_path(item)
-    if not local_path:
-        return None
-    return _validate_local_media_path(local_path)
-
-
-def is_valid_youtube_url(url):
-    """Validate that a URL points to a supported YouTube host."""
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return False
-
-    if parsed.scheme not in {'http', 'https'}:
-        return False
-
-    hostname = (parsed.hostname or '').lower()
-    return hostname in ALLOWED_YOUTUBE_HOSTS
-
-
-
-
-def youtube_match_filter(info_dict, *, incomplete):
-    """Reject overly long videos before downloading."""
-    duration = info_dict.get('duration')
-    if duration and duration > MAX_YOUTUBE_DURATION_SECONDS:
-        return f'Video exceeds {MAX_YOUTUBE_DURATION_SECONDS} seconds'
-    return None
-
-
-def _youtube_retry_profiles():
-    """Yield yt-dlp retry profiles for videos with client-specific availability."""
-    return [
-        ('default', {}),
-        ('android', {'extractor_args': {'youtube': {'player_client': ['android']}}}),
-    ]
-
-
-def _youtube_preview_ydl_opts(profile_overrides=None):
-    """Build yt-dlp options for extracting a preview audio stream URL."""
-    opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
-        'skip_download': True,
-        'socket_timeout': 30,
-        'js_runtimes': {'node': {}},
-        'remote_components': ['ejs:github'],
-    }
-    if profile_overrides:
-        opts.update(profile_overrides)
-    return opts
-
-
-def _youtube_download_ydl_opts(tmpdir, profile_overrides=None):
-    """Build yt-dlp options for downloading and converting a theme MP3."""
-    opts = {
-        'format': 'bestaudio/best',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-        'outtmpl': os.path.join(tmpdir, 'theme.%(ext)s'),
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
-        'match_filter': youtube_match_filter,
-        'max_filesize': MAX_UPLOAD_BYTES,
-        'js_runtimes': {'node': {}},
-        'remote_components': ['ejs:github'],
-    }
-    if profile_overrides:
-        opts.update(profile_overrides)
-    return opts
-
-
-def _clean_yt_dlp_error(exc):
-    """Normalize yt-dlp error messages for user-facing responses."""
-    return str(exc).removeprefix('ERROR: ').strip()
-
-
-def _stream_http_response_chunks(response, *, chunk_size=8192):
-    """Yield streamed HTTP response chunks while handling client disconnects."""
-    try:
-        for chunk in response.iter_content(chunk_size=chunk_size):
-            if chunk:
-                yield chunk
-    except (http_requests.exceptions.ChunkedEncodingError, http_requests.exceptions.ConnectionError, BrokenPipeError, ConnectionResetError) as exc:
-        logger.info('Stream interrupted while sending preview audio: %s', exc)
-    finally:
-        response.close()
 
 
 def _extract_youtube_audio_url(youtube_url):

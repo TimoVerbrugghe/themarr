@@ -29,6 +29,7 @@ let currentLibraryId = null;
 let currentLibraryProvider = null;
 let currentItems = [];
 let activeFilter = 'all';
+let activeFilters = { theme: 'all', plex: false, themerrdb: false };
 let activeItemContext = null;
 // Default view: localStorage override → server default (data-default-view) → 'list'
 const _serverDefaultView = document.documentElement.dataset.defaultView || 'list';
@@ -368,6 +369,15 @@ async function selectLibrary(provider, id, title) {
   currentLibraryProvider = provider;
   currentLibraryId = id;
   activeFilter = 'all';
+  activeFilters = { theme: 'all', plex: false, themerrdb: false };
+  // Reset filter panel UI
+  const themeRadios = document.querySelectorAll('input[name="filter-theme"]');
+  themeRadios.forEach((r) => { r.checked = r.value === 'all'; });
+  const plexCheck = document.getElementById('filter-plex-avail');
+  const themerrdbCheck = document.getElementById('filter-themerrdb-avail');
+  if (plexCheck) plexCheck.checked = false;
+  if (themerrdbCheck) themerrdbCheck.checked = false;
+  updateFilterButtonState();
   const bulkBtn = document.getElementById('btn-bulk-download');
   if (bulkBtn) {
     bulkBtn.disabled = provider !== 'plex';
@@ -435,10 +445,16 @@ function renderItems(items) {
   const searchVal = (document.getElementById('search-input').value || '').toLowerCase();
   const filtered = items.filter((item) => {
     const matchSearch = !searchVal || item.title.toLowerCase().includes(searchVal);
-    let matchFilter = true;
-    if (activeFilter === 'has_theme') matchFilter = item.has_local_theme;
-    if (activeFilter === 'no_theme') matchFilter = !item.has_local_theme;
-    return matchSearch && matchFilter;
+    // Theme status filter
+    let themeOk = true;
+    if (activeFilters.theme === 'has_theme') themeOk = item.has_local_theme;
+    if (activeFilters.theme === 'no_theme') themeOk = !item.has_local_theme;
+    if (!themeOk) return false;
+    // Source availability filter (OR logic: show items matching at least one checked source)
+    if (!activeFilters.plex && !activeFilters.themerrdb) return matchSearch;
+    const sourceOk = (activeFilters.plex && item.has_plex_theme) ||
+                     (activeFilters.themerrdb && item.has_themerrdb_theme);
+    return matchSearch && sourceOk;
   });
 
   if (!filtered.length) {
@@ -535,20 +551,10 @@ function createItemCard(item) {
   const actions = document.createElement('div');
   actions.className = 'item-actions';
 
-  // Button order: Download from Plex → ThemerrDB → YouTube → Copy theme from → Upload → Delete
-  const downloadButton = createActionButton('action-btn action-btn-download', 'Download from Plex', BTN_PLEX[1]);
-  downloadButton.disabled = !item.has_plex_theme;
-  downloadButton.addEventListener('click', () => openDownloadModal(item));
-  actions.appendChild(downloadButton);
-
-  const themerrdbButton = createActionButton('action-btn action-btn-themerrdb', 'Download from ThemerrDB', BTN_THEMERRDB[1]);
-  themerrdbButton.disabled = !item.has_themerrdb_theme;
-  themerrdbButton.addEventListener('click', () => openThemerrdbModal(item));
-  actions.appendChild(themerrdbButton);
-
-  const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', BTN_YOUTUBE[1]);
-  youtubeButton.addEventListener('click', () => openYoutubeModal(item));
-  actions.appendChild(youtubeButton);
+  // Single "Get Theme" button with availability indicators
+  const getThemeBtn = createGetThemeButton(item, 'grid');
+  getThemeBtn.addEventListener('click', () => openGetThemeModal(item));
+  actions.appendChild(getThemeBtn);
 
   const copyButton = createActionButton('action-btn action-btn-copy', 'Copy theme from another item', BTN_COPY[1]);
   copyButton.addEventListener('click', () => openCopyThemeModal(item));
@@ -576,6 +582,38 @@ function createActionButton(className, title, html) {
   button.type = 'button';
   button.innerHTML = html;
   return button;
+}
+
+function createGetThemeButton(item, view) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'action-btn action-btn-get-theme';
+  btn.title = 'Get theme';
+
+  const labelSpan = document.createElement('span');
+  labelSpan.textContent = 'Get Theme';
+  btn.appendChild(labelSpan);
+
+  // Availability indicator images
+  const indicators = document.createElement('span');
+  indicators.className = 'get-theme-indicators';
+
+  const plexImg = document.createElement('img');
+  plexImg.src = 'https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/plex.svg';
+  plexImg.alt = '';
+  plexImg.className = 'get-theme-indicator' + (item.has_plex_theme ? '' : ' unavailable');
+  plexImg.title = item.has_plex_theme ? 'Plex theme available' : 'No Plex theme';
+  indicators.appendChild(plexImg);
+
+  const tdbImg = document.createElement('img');
+  tdbImg.src = 'https://app.lizardbyte.dev/ThemerrDB/assets/img/navbar-avatar.png';
+  tdbImg.alt = '';
+  tdbImg.className = 'get-theme-indicator' + (item.has_themerrdb_theme ? '' : ' unavailable');
+  tdbImg.title = item.has_themerrdb_theme ? 'ThemerrDB theme available' : 'No ThemerrDB theme';
+  indicators.appendChild(tdbImg);
+
+  btn.appendChild(indicators);
+  return btn;
 }
 
 function posterPlaceholder(type, title) {
@@ -665,29 +703,13 @@ function createItemRow(item) {
   }
   actionMenu.addEventListener('click', (e) => e.stopPropagation());
 
-  // Button order: Download from Plex → ThemerrDB → YouTube → Copy theme from → Upload → Delete
-  const downloadButton = createActionButton('action-btn action-btn-download', 'Download from Plex', BTN_PLEX[2]);
-  downloadButton.disabled = !item.has_plex_theme;
-  downloadButton.addEventListener('click', () => {
+  // Button order: Get Theme → Copy theme from → Upload → Delete
+  const getThemeBtn = createGetThemeButton(item, 'list');
+  getThemeBtn.addEventListener('click', () => {
     closeAllRowActionMenus();
-    openDownloadModal(item);
+    openGetThemeModal(item);
   });
-  actionMenu.appendChild(downloadButton);
-
-  const themerrdbButton = createActionButton('action-btn action-btn-themerrdb', 'Download from ThemerrDB', BTN_THEMERRDB[2]);
-  themerrdbButton.disabled = !item.has_themerrdb_theme;
-  themerrdbButton.addEventListener('click', () => {
-    closeAllRowActionMenus();
-    openThemerrdbModal(item);
-  });
-  actionMenu.appendChild(themerrdbButton);
-
-  const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', BTN_YOUTUBE[2]);
-  youtubeButton.addEventListener('click', () => {
-    closeAllRowActionMenus();
-    openYoutubeModal(item);
-  });
-  actionMenu.appendChild(youtubeButton);
+  actionMenu.appendChild(getThemeBtn);
 
   const copyButton = createActionButton('action-btn action-btn-copy', 'Copy theme from another item', BTN_COPY[2]);
   copyButton.addEventListener('click', () => {
@@ -973,13 +995,114 @@ async function executeBulkDownload(overwrite) {
 // ============================================================
 function setFilter(filter) {
   activeFilter = filter;
-  document.querySelectorAll('.filter-buttons .btn').forEach((button) => button.classList.remove('active'));
-  document.getElementById(`filter-${filter.replace(/_/g, '-')}`).classList.add('active');
+  activeFilters.theme = filter;
   renderItems(currentItems);
+}
+
+function applyFilters() {
+  const themeRadio = document.querySelector('input[name="filter-theme"]:checked');
+  activeFilters.theme = themeRadio ? themeRadio.value : 'all';
+  activeFilter = activeFilters.theme;
+  const plexCheck = document.getElementById('filter-plex-avail');
+  const tdbCheck = document.getElementById('filter-themerrdb-avail');
+  activeFilters.plex = plexCheck ? plexCheck.checked : false;
+  activeFilters.themerrdb = tdbCheck ? tdbCheck.checked : false;
+  updateFilterButtonState();
+  renderItems(currentItems);
+}
+
+function toggleFilterPanel(event) {
+  event.stopPropagation();
+  const panel = document.getElementById('filter-panel');
+  const btn = document.getElementById('filter-icon-btn');
+  const isOpen = !panel.classList.contains('hidden');
+  if (isOpen) {
+    panel.classList.add('hidden');
+    btn.setAttribute('aria-expanded', 'false');
+  } else {
+    panel.classList.remove('hidden');
+    btn.setAttribute('aria-expanded', 'true');
+  }
+}
+
+function clearFilters() {
+  const themeRadios = document.querySelectorAll('input[name="filter-theme"]');
+  themeRadios.forEach((r) => { r.checked = r.value === 'all'; });
+  const plexCheck = document.getElementById('filter-plex-avail');
+  const tdbCheck = document.getElementById('filter-themerrdb-avail');
+  if (plexCheck) plexCheck.checked = false;
+  if (tdbCheck) tdbCheck.checked = false;
+  applyFilters();
+}
+
+function updateFilterButtonState() {
+  const btn = document.getElementById('filter-icon-btn');
+  const badge = document.getElementById('filter-active-badge');
+  if (!btn || !badge) return;
+  let activeCount = 0;
+  if (activeFilters.theme !== 'all') activeCount++;
+  if (activeFilters.plex) activeCount++;
+  if (activeFilters.themerrdb) activeCount++;
+  if (activeCount > 0) {
+    btn.classList.add('filter-active');
+    badge.textContent = activeCount;
+    badge.classList.remove('hidden');
+  } else {
+    btn.classList.remove('filter-active');
+    badge.classList.add('hidden');
+  }
 }
 
 function filterItems() {
   renderItems(currentItems);
+}
+
+// Close filter panel when clicking outside
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('filter-panel');
+  const wrapper = document.querySelector('.filter-wrapper');
+  if (panel && wrapper && !wrapper.contains(e.target) && !panel.classList.contains('hidden')) {
+    panel.classList.add('hidden');
+    const btn = document.getElementById('filter-icon-btn');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+});
+
+// ============================================================
+// Get Theme Modal (source selection)
+// ============================================================
+function openGetThemeModal(item) {
+  activeItemContext = { provider: item.provider || 'plex', id: String(item.id || item.ratingKey), item };
+
+  // Configure source buttons based on availability
+  const plexBtn = document.getElementById('get-theme-btn-plex');
+  const tdbBtn = document.getElementById('get-theme-btn-themerrdb');
+  const plexStatus = document.getElementById('get-theme-plex-status');
+  const tdbStatus = document.getElementById('get-theme-themerrdb-status');
+
+  if (plexBtn) {
+    plexBtn.disabled = !item.has_plex_theme;
+    if (plexStatus) plexStatus.textContent = item.has_plex_theme ? 'Theme available' : 'Not available';
+  }
+  if (tdbBtn) {
+    tdbBtn.disabled = !item.has_themerrdb_theme;
+    if (tdbStatus) tdbStatus.textContent = item.has_themerrdb_theme ? 'Theme available' : 'Not available';
+  }
+
+  openModal('modal-get-theme');
+}
+
+function getThemeSelectSource(source) {
+  closeModal('modal-get-theme');
+  const item = activeItemContext && activeItemContext.item;
+  if (!item) return;
+  if (source === 'plex') {
+    openDownloadModal(item);
+  } else if (source === 'themerrdb') {
+    openThemerrdbModal(item);
+  } else if (source === 'youtube') {
+    openYoutubeModal(item);
+  }
 }
 
 // ============================================================
