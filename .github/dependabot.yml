@@ -4,13 +4,35 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    groups:
+      # Batch all Python dependency patch/minor bumps into a single PR
+      python-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    groups:
+      # Batch all action SHA bumps into a single PR for easier review
+      github-actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
