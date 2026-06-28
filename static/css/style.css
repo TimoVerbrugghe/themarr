@@ -818,6 +818,11 @@ a:hover { color: var(--accent-hover); }
 
 .preview-player { width: 100%; }
 .preview-player audio { width: 100%; accent-color: var(--accent); }
+.preview-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 
 .muted { color: var(--text-dim) !important; }
 .error { color: var(--danger) !important; }

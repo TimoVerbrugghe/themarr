@@ -129,6 +129,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('copy-theme-source-item').addEventListener('change', () => {
     syncCopyThemeConfirmButton();
   });
+  const previewAudio = document.getElementById('preview-audio');
+  previewAudio.addEventListener('error', () => {
+    const previewError = document.getElementById('preview-audio-error');
+    if (previewAudio.src) {
+      previewError.textContent = 'Preview stream could not be loaded. Check connection and item availability.';
+      previewError.classList.remove('hidden');
+    }
+  });
 
   await waitForStartupHydration();
   loadLibraries();
@@ -468,7 +476,7 @@ function createItemCard(item) {
 
   const themerrdbButton = createActionButton('action-btn action-btn-themerrdb', 'Download from ThemerrDB', BTN_THEMERRDB[1]);
   themerrdbButton.disabled = !item.has_themerrdb_theme;
-  themerrdbButton.addEventListener('click', () => openThemerrdbModal(item.ratingKey, item.title, item.has_local_theme));
+  themerrdbButton.addEventListener('click', () => openThemerrdbModal(item));
   actions.appendChild(themerrdbButton);
 
   const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', BTN_YOUTUBE[1]);
@@ -603,7 +611,7 @@ function createItemRow(item) {
   themerrdbButton.disabled = !item.has_themerrdb_theme;
   themerrdbButton.addEventListener('click', () => {
     closeAllRowActionMenus();
-    openThemerrdbModal(item.ratingKey, item.title, item.has_local_theme);
+    openThemerrdbModal(item);
   });
   actionMenu.appendChild(themerrdbButton);
 
@@ -913,8 +921,11 @@ function filterItems() {
 function openDownloadModal(item) {
   activeItemContext = { provider: item.provider || 'plex', id: String(item.id || item.ratingKey) };
   const previewAudio = document.getElementById('preview-audio');
+  const previewError = document.getElementById('preview-audio-error');
   previewAudio.pause();
   previewAudio.src = '';
+  previewError.textContent = '';
+  previewError.classList.add('hidden');
 
   document.getElementById('modal-download-message').textContent =
     `Download the Plex theme for "${item.title}" and save it as theme.mp3?`;
@@ -928,17 +939,29 @@ function openDownloadModal(item) {
   }
   _syncOverwriteActionButton('btn-confirm-download', 'download-overwrite-check', item.has_local_theme);
 
-  document.getElementById('btn-preview-plex').disabled = !item.has_plex_theme;
-  document.getElementById('modal-download-preview').classList.add('hidden');
+  const previewContainer = document.getElementById('modal-download-preview');
+  previewContainer.classList.remove('hidden');
+  previewAudio.src = `/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme/preview?t=${Date.now()}`;
+  previewAudio.load();
 
   openModal('modal-download');
-}
-
-async function previewPlexTheme() {
-  const audio = document.getElementById('preview-audio');
-  audio.src = `/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme/preview?t=${Date.now()}`;
-  document.getElementById('modal-download-preview').classList.remove('hidden');
-  audio.play().catch(() => {});
+  apiGet(`/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme/preview/check`)
+    .then((check) => {
+      if (!check.available) {
+        const reason = check.reason || 'Preview is unavailable for this item.';
+        previewError.textContent = reason;
+        previewError.classList.remove('hidden');
+        previewAudio.src = '';
+        previewAudio.load();
+        showToast('error', reason);
+      }
+    })
+    .catch((err) => {
+      previewError.textContent = `Could not prepare preview: ${String(err)}`;
+      previewError.classList.remove('hidden');
+      previewAudio.src = '';
+      previewAudio.load();
+    });
 }
 
 async function confirmDownload() {
@@ -974,12 +997,12 @@ async function confirmDownload() {
 // ============================================================
 // ThemerrDB Modal
 // ============================================================
-async function openThemerrdbModal(ratingKey, title, hasLocalTheme) {
-  activeItemKey = ratingKey;
-  document.getElementById('themerrdb-item-title').textContent = title;
+async function openThemerrdbModal(item) {
+  activeItemContext = { provider: item.provider || 'plex', id: String(item.id || item.ratingKey) };
+  document.getElementById('themerrdb-item-title').textContent = item.title;
 
   const overwriteDiv = document.getElementById('modal-themerrdb-overwrite');
-  if (hasLocalTheme) {
+  if (item.has_local_theme) {
     overwriteDiv.classList.remove('hidden');
     document.getElementById('themerrdb-overwrite-check').checked = false;
   } else {
@@ -987,18 +1010,26 @@ async function openThemerrdbModal(ratingKey, title, hasLocalTheme) {
   }
 
   const previewContainer = document.getElementById('themerrdb-preview-container');
-  previewContainer.innerHTML = '<p class="muted">Loading preview…</p>';
+  previewContainer.innerHTML = `
+    <div class="preview-loading">
+      <div class="spinner"></div>
+      <span class="muted">Loading preview…</span>
+    </div>
+  `;
 
   openModal('modal-themerrdb');
-  _syncOverwriteActionButton('btn-confirm-themerrdb', 'themerrdb-overwrite-check');
+  _syncOverwriteActionButton('btn-confirm-themerrdb', 'themerrdb-overwrite-check', item.has_local_theme);
 
   try {
-    const response = await fetch(`/api/items/${ratingKey}/theme/themerrdb/check`);
+    const basePath = `/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme/themerrdb`;
+    const response = await fetch(`${basePath}/check`);
     const result = await response.json();
 
     if (!response.ok || !result.available) {
-      previewContainer.innerHTML = '<p class="error">Theme not available in ThemerrDB</p>';
+      const reason = result.reason || 'Theme not available in ThemerrDB';
+      previewContainer.innerHTML = `<p class="error">${escHtml(reason)}</p>`;
       document.getElementById('btn-confirm-themerrdb').disabled = true;
+      showToast('error', reason);
       return;
     }
 
@@ -1006,7 +1037,7 @@ async function openThemerrdbModal(ratingKey, title, hasLocalTheme) {
     previewContainer.innerHTML = `
       <div class="preview-player">
         <audio controls style="width: 100%;">
-          <source src="/api/items/${ratingKey}/theme/themerrdb/preview" type="audio/mpeg">
+          <source src="${basePath}/preview" type="audio/mpeg">
           Your browser does not support the audio element.
         </audio>
       </div>
@@ -1261,7 +1292,7 @@ function openYoutubeModal(item) {
   } else {
     overwriteDiv.classList.add('hidden');
   }
-  _syncOverwriteActionButton('btn-confirm-youtube', 'youtube-overwrite-check', hasLocalTheme);
+  _syncOverwriteActionButton('btn-confirm-youtube', 'youtube-overwrite-check', item.has_local_theme);
 
   const defaultQuery = `${item.title} theme song`;
   document.getElementById('youtube-search-input').value = defaultQuery;
@@ -1448,11 +1479,14 @@ async function confirmThemerrdb() {
   btn.disabled = true;
 
   try {
-    const resp = await fetch(`/api/items/${activeItemKey}/theme/themerrdb`, {
+    const resp = await fetch(
+      `/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme/themerrdb`,
+      {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ overwrite }),
-    });
+      },
+    );
     const data = await resp.json();
     progressEl.classList.add('hidden');
 
@@ -1464,7 +1498,7 @@ async function confirmThemerrdb() {
       showToast('success', 'ThemerrDB theme downloaded successfully!');
       closeModal('modal-themerrdb');
       if (!applyServerItemUpdate(data.item)) {
-        await refreshItem(activeItemKey);
+        await refreshItem(activeItemContext.id);
       }
     } else {
       showToast('error', data.error || 'ThemerrDB download failed');
@@ -1654,25 +1688,32 @@ function openModal(id) {
   document.getElementById(id).classList.remove('hidden');
 }
 
+function _stopModalMediaPlayback(modalId) {
+  const overlay = document.getElementById(modalId);
+  if (overlay) {
+    overlay.querySelectorAll('audio').forEach((audio) => {
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.querySelectorAll('source').forEach((source) => source.removeAttribute('src'));
+      audio.load();
+    });
+  }
+  if (modalId === 'modal-youtube') _stopYoutubePlayer();
+}
+
 function closeModal(id, event) {
   const overlay = document.getElementById(id);
   if (event && event.target !== overlay) return;
   overlay.classList.add('hidden');
-  const previewAudio = document.getElementById('preview-audio');
-  if (previewAudio) {
-    previewAudio.pause();
-    previewAudio.src = '';
-  }
-  if (id === 'modal-youtube') _stopYoutubePlayer();
+  _stopModalMediaPlayback(id);
 }
 
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
-    const wasYoutubeOpen = !document.getElementById('modal-youtube').classList.contains('hidden');
     document.querySelectorAll('.modal-overlay:not(.hidden)').forEach((modal) => {
+      _stopModalMediaPlayback(modal.id);
       modal.classList.add('hidden');
     });
-    if (wasYoutubeOpen) _stopYoutubePlayer();
   }
 });
 
