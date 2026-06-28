@@ -16,6 +16,7 @@ import requests as http_requests
 import yt_dlp
 from flask import Flask, Response, jsonify, render_template, request, send_file
 from plexapi.server import PlexServer
+from werkzeug.utils import safe_join
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -176,23 +177,25 @@ def _is_within_root(path, root):
 
 
 def _validate_local_media_path(local_path):
-    """Resolve and validate local media path against configured roots."""
+    """Normalize and validate local media path for safe filesystem usage."""
     if local_path is None:
         return None
 
-    try:
-        resolved = Path(local_path).resolve(strict=False)
-    except OSError as exc:
-        raise ValueError('Invalid local media path') from exc
+    local_path_str = str(local_path)
+    sanitized = safe_join('/', local_path_str.lstrip('/'))
+    if sanitized is None:
+        raise ValueError('Invalid local media path')
 
-    if not resolved.is_absolute():
+    normalized = os.path.normpath(sanitized)
+    if not normalized.startswith('/'):
         raise ValueError('Invalid local media path')
 
     roots = _configured_media_roots()
-    if roots and not any(_is_within_root(resolved, root) for root in roots):
+    normalized_path = Path(normalized)
+    if roots and not any(_is_within_root(normalized_path, root) for root in roots):
         raise ValueError('Item path is outside configured media roots')
 
-    return resolved
+    return normalized_path
 
 
 def _theme_file_path(local_path):
@@ -218,11 +221,6 @@ def _serialize_jellyfin_item(item, library_id, theme_dirs=None):
         if theme_dirs is not None:
             theme_size = theme_dirs.get(str(local_path), 0)
             theme_exists = theme_size > 0
-        else:
-            theme_path = local_path / 'theme.mp3'
-            if theme_path.exists() and theme_path.stat().st_size > 0:
-                theme_exists = True
-                theme_size = theme_path.stat().st_size
 
     item_type = (item.get('Type') or '').lower()
     media_type = 'show' if item_type == 'series' else 'movie'
