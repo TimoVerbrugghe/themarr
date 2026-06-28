@@ -64,8 +64,16 @@ BACKGROUND_WORKER_COUNT = BACKGROUND_WORKER_COUNT_DEFAULT
 LIBRARY_PAGE_SIZE = LIBRARY_PAGE_SIZE_DEFAULT
 LIBRARY_PAGE_SIZE_MAX_VALUE = LIBRARY_PAGE_SIZE_MAX
 app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_BYTES
-# Browser sessions are intentionally process-local and reset on restart.
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY') or secrets.token_hex(32)
+# Use a stable SECRET_KEY so sessions survive container restarts.
+# If not set, a random key is generated — sessions will be lost on every restart.
+_secret_key_env = (os.getenv('SECRET_KEY') or '').strip()
+if not _secret_key_env:
+    logger.warning(
+        'SECRET_KEY is not set; a random session key was generated. '
+        'All sessions will be invalidated on every container restart. '
+        'Set SECRET_KEY to a stable value to persist sessions across restarts.'
+    )
+app.config['SECRET_KEY'] = _secret_key_env or secrets.token_hex(32)
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_SECURE'] = (os.getenv('FLASK_DEBUG', 'false').lower() not in {'true', '1', 'yes'})

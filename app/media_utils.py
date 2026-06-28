@@ -58,9 +58,9 @@ def _validate_local_media_path(local_path):
     allowed_roots = _get_allowed_media_roots()
     if allowed_roots:
         normalized_resolved = normalized_path.resolve() if normalized_path.exists() else normalized_path
+        # Use is_relative_to() (Python 3.9+) for clear, edge-case-safe boundary check.
         if not any(
-            str(normalized_resolved).startswith(str(root) + os.sep)
-            or normalized_resolved == root
+            normalized_resolved == root or normalized_resolved.is_relative_to(root)
             for root in allowed_roots
         ):
             raise ValueError(
