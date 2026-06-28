@@ -26,9 +26,10 @@ const SERVER_DEFAULT_THEME = document.documentElement.dataset.theme || 'dark';
 
 // State
 let currentLibraryId = null;
+let currentLibraryProvider = null;
 let currentItems = [];
 let activeFilter = 'all';
-let activeItemKey = null;
+let activeItemContext = null;
 // Default view: localStorage override → server default (data-default-view) → 'list'
 const _serverDefaultView = document.documentElement.dataset.defaultView || 'list';
 const _savedView = localStorage.getItem('themarr-view');
@@ -42,6 +43,40 @@ let activePlayBtn = null; // button element that triggered playback
 const STARTUP_POLL_INTERVAL_MS = 1500;
 let lastCompactActionMenuMode = null;
 const ACTION_MENU_COLLAPSE_BREAKPOINT = 1200;
+
+function makeLibraryCacheKey(provider, libraryId) {
+  return `${provider}:${libraryId}`;
+}
+
+function libraryItemsPath(provider, libraryId) {
+  if (provider === 'plex') return `/api/libraries/${libraryId}/items`;
+  return `/api/libraries/${provider}/${encodeURIComponent(libraryId)}/items`;
+}
+
+function providerPosterPath(item) {
+  if ((item.provider || 'plex') === 'plex') return `/api/poster/${item.ratingKey}`;
+  return `/api/poster/${item.provider}/${encodeURIComponent(item.id || item.ratingKey)}`;
+}
+
+function providerItemThemePath(item) {
+  const provider = item.provider || 'plex';
+  const itemId = encodeURIComponent(item.id || item.ratingKey);
+  return `/api/items/${provider}/${itemId}/theme`;
+}
+
+function providerItemActionPath(item, suffix = '') {
+  const provider = item.provider || 'plex';
+  const itemId = encodeURIComponent(item.id || item.ratingKey);
+  return `/api/items/${provider}/${itemId}${suffix}`;
+}
+
+function itemSelectionKey(item) {
+  return `${item.provider || 'plex'}:${item.id || item.ratingKey}`;
+}
+
+function selectedKeyFor(provider, itemId) {
+  return `${provider}:${itemId}`;
+}
 
 function isCompactActionMenuMode() {
   return window.matchMedia(`(max-width: ${ACTION_MENU_COLLAPSE_BREAKPOINT}px)`).matches;
@@ -205,43 +240,69 @@ async function checkPlexStatus() {
 // Libraries
 // ============================================================
 async function loadLibraries() {
-  const nav = document.getElementById('library-nav');
+  const plexNav = document.getElementById('library-nav');
+  const jellyfinNav = document.getElementById('jellyfin-library-nav');
   try {
     const libraries = await apiGet('/api/libraries');
     if (!libraries.length) {
-      nav.innerHTML = '<div class="sidebar-loading">No TV/Movie libraries found</div>';
+      plexNav.innerHTML = '<div class="sidebar-loading">No Plex libraries found</div>';
+      jellyfinNav.innerHTML = '<div class="sidebar-loading">No Jellyfin libraries found</div>';
       return;
     }
 
-    nav.innerHTML = '';
-    for (const lib of libraries) {
-      const icon = lib.type === 'show' ? '📺' : '🎬';
-      const item = document.createElement('a');
-      item.className = 'library-nav-item';
-      item.dataset.id = lib.id;
-      item.href = '#';
-      item.innerHTML = `
-        <span class="library-nav-icon">${icon}</span>
-        <span class="library-nav-name">${escHtml(lib.title)}</span>
-        <span class="library-nav-count">${lib.totalSize || ''}</span>
-      `;
-      item.addEventListener('click', (event) => {
-        event.preventDefault();
-        selectLibrary(lib.id, lib.title);
-      });
-      nav.appendChild(item);
-    }
+    const plexLibraries = libraries.filter((lib) => (lib.provider || 'plex') === 'plex');
+    const jellyfinLibraries = libraries.filter((lib) => (lib.provider || 'plex') === 'jellyfin');
+    plexNav.innerHTML = '';
+    jellyfinNav.innerHTML = '';
+
+    const renderLibraryList = (targetNav, libs, provider) => {
+      if (!libs.length) {
+        targetNav.innerHTML = `<div class="sidebar-loading">No ${provider === 'plex' ? 'Plex' : 'Jellyfin'} libraries found</div>`;
+        return;
+      }
+      for (const lib of libs) {
+        const icon = lib.type === 'show' ? '📺' : '🎬';
+        const item = document.createElement('a');
+        item.className = 'library-nav-item';
+        item.dataset.id = String(lib.id);
+        item.dataset.provider = provider;
+        item.href = '#';
+        item.innerHTML = `
+          <span class="library-nav-icon">${icon}</span>
+          <span class="library-nav-name">${escHtml(lib.title)}</span>
+          <span class="library-nav-count">${lib.totalSize || ''}</span>
+        `;
+        item.addEventListener('click', (event) => {
+          event.preventDefault();
+          selectLibrary(provider, String(lib.id), lib.title);
+        });
+        targetNav.appendChild(item);
+      }
+    };
+
+    renderLibraryList(plexNav, plexLibraries, 'plex');
+    renderLibraryList(jellyfinNav, jellyfinLibraries, 'jellyfin');
   } catch (err) {
-    nav.innerHTML = `<div class="sidebar-loading">Error: ${escHtml(String(err))}</div>`;
+    const msg = `<div class="sidebar-loading">Error: ${escHtml(String(err))}</div>`;
+    plexNav.innerHTML = msg;
+    jellyfinNav.innerHTML = msg;
   }
 }
 
-async function selectLibrary(id, title) {
+async function selectLibrary(provider, id, title) {
+  currentLibraryProvider = provider;
   currentLibraryId = id;
   activeFilter = 'all';
+  const bulkBtn = document.getElementById('btn-bulk-download');
+  if (bulkBtn) {
+    bulkBtn.disabled = provider !== 'plex';
+    bulkBtn.textContent = provider === 'plex' ? '↓ Download Themes' : '↓ Download from Plex (Plex only)';
+  }
 
   document.querySelectorAll('.library-nav-item').forEach((el) => el.classList.remove('active'));
-  const navItem = document.querySelector(`.library-nav-item[data-id="${id}"]`);
+  const navItem = Array.from(document.querySelectorAll('.library-nav-item')).find(
+    (el) => el.dataset.provider === provider && el.dataset.id === String(id),
+  );
   if (navItem) navItem.classList.add('active');
 
   document.getElementById('welcome-screen').classList.add('hidden');
@@ -262,10 +323,12 @@ async function selectLibrary(id, title) {
   // Stop any playing audio
   stopInlineAudio();
 
+  const cacheKey = makeLibraryCacheKey(provider, id);
+
   // Serve from cache if available, fetch otherwise
-  if (libraryCache.has(id)) {
+  if (libraryCache.has(cacheKey)) {
     document.getElementById('items-loading').classList.add('hidden');
-    const items = libraryCache.get(id);
+    const items = libraryCache.get(cacheKey);
     currentItems = items;
     renderItems(items);
     updateStats(items);
@@ -274,8 +337,8 @@ async function selectLibrary(id, title) {
 
   document.getElementById('items-loading').classList.remove('hidden');
   try {
-    const items = await apiGet(`/api/libraries/${id}/items`);
-    libraryCache.set(id, items);
+    const items = await apiGet(libraryItemsPath(provider, id));
+    libraryCache.set(cacheKey, items);
     currentItems = items;
     document.getElementById('items-loading').classList.add('hidden');
     renderItems(items);
@@ -313,9 +376,11 @@ function renderItems(items) {
 
 function createItemCard(item) {
   const card = document.createElement('div');
-  const isSelected = selectedItems.has(item.ratingKey);
+  const selectionKey = itemSelectionKey(item);
+  const isSelected = selectedItems.has(selectionKey);
   card.className = `item-card${item.has_local_theme ? ' has-theme' : ''}${isSelected ? ' selected' : ''}`;
-  card.id = `card-${item.ratingKey}`;
+  card.id = `card-${selectionKey}`;
+  card.dataset.selectionKey = selectionKey;
 
   const poster = document.createElement('div');
   poster.className = 'item-poster';
@@ -329,13 +394,13 @@ function createItemCard(item) {
   checkbox.title = 'Select for bulk action';
   checkbox.addEventListener('change', (e) => {
     e.stopPropagation();
-    toggleItemSelection(item.ratingKey, e.target.checked, card);
+    toggleItemSelection(selectionKey, e.target.checked, card);
   });
   selectWrap.appendChild(checkbox);
   poster.appendChild(selectWrap);
 
   const image = document.createElement('img');
-  image.src = `/api/poster/${item.ratingKey}`;
+  image.src = providerPosterPath(item);
   image.alt = item.title;
   image.loading = 'lazy';
   image.decoding = 'async';
@@ -388,7 +453,7 @@ function createItemCard(item) {
     playBtn.type = 'button';
     playBtn.title = 'Preview theme';
     playBtn.innerHTML = ICON_PLAY;
-    playBtn.addEventListener('click', () => toggleInlineAudio(item.ratingKey, playBtn));
+    playBtn.addEventListener('click', () => toggleInlineAudio(item, playBtn));
     body.appendChild(playBtn);
   }
 
@@ -398,7 +463,7 @@ function createItemCard(item) {
   // Button order: Download from Plex → ThemerrDB → YouTube → Copy theme from → Upload → Delete
   const downloadButton = createActionButton('action-btn action-btn-download', 'Download from Plex', BTN_PLEX[1]);
   downloadButton.disabled = !item.has_plex_theme;
-  downloadButton.addEventListener('click', () => openDownloadModal(item.ratingKey, item.title, item.has_local_theme, item.has_plex_theme));
+  downloadButton.addEventListener('click', () => openDownloadModal(item));
   actions.appendChild(downloadButton);
 
   const themerrdbButton = createActionButton('action-btn action-btn-themerrdb', 'Download from ThemerrDB', BTN_THEMERRDB[1]);
@@ -407,20 +472,20 @@ function createItemCard(item) {
   actions.appendChild(themerrdbButton);
 
   const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', BTN_YOUTUBE[1]);
-  youtubeButton.addEventListener('click', () => openYoutubeModal(item.ratingKey, item.title, item.has_local_theme));
+  youtubeButton.addEventListener('click', () => openYoutubeModal(item));
   actions.appendChild(youtubeButton);
 
   const copyButton = createActionButton('action-btn action-btn-copy', 'Copy theme from another item', BTN_COPY[1]);
-  copyButton.addEventListener('click', () => openCopyThemeModal(item.ratingKey, item.title, item.has_local_theme));
+  copyButton.addEventListener('click', () => openCopyThemeModal(item));
   actions.appendChild(copyButton);
 
   const uploadButton = createActionButton('action-btn action-btn-upload', 'Upload custom theme', BTN_UPLOAD[1]);
-  uploadButton.addEventListener('click', () => openUploadModal(item.ratingKey, item.title, item.has_local_theme));
+  uploadButton.addEventListener('click', () => openUploadModal(item));
   actions.appendChild(uploadButton);
 
   const deleteButton = createActionButton('action-btn action-btn-delete', 'Delete theme', '🗑 Delete');
   deleteButton.disabled = !item.has_local_theme;
-  deleteButton.addEventListener('click', () => openDeleteModal(item.ratingKey, item.title));
+  deleteButton.addEventListener('click', () => openDeleteModal(item));
   actions.appendChild(deleteButton);
 
   body.appendChild(actions);
@@ -449,9 +514,11 @@ function createItem(item) {
 
 function createItemRow(item) {
   const row = document.createElement('div');
-  const isSelected = selectedItems.has(item.ratingKey);
+  const selectionKey = itemSelectionKey(item);
+  const isSelected = selectedItems.has(selectionKey);
   row.className = `item-card item-row${item.has_local_theme ? ' has-theme' : ''}${isSelected ? ' selected' : ''}`;
-  row.id = `card-${item.ratingKey}`;
+  row.id = `card-${selectionKey}`;
+  row.dataset.selectionKey = selectionKey;
 
   const checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
@@ -459,7 +526,7 @@ function createItemRow(item) {
   checkbox.title = 'Select for bulk action';
   checkbox.addEventListener('change', (e) => {
     e.stopPropagation();
-    toggleItemSelection(item.ratingKey, e.target.checked, row);
+    toggleItemSelection(selectionKey, e.target.checked, row);
   });
   row.appendChild(checkbox);
 
@@ -489,7 +556,7 @@ function createItemRow(item) {
     playBtn.type = 'button';
     playBtn.title = 'Preview theme';
     playBtn.innerHTML = ICON_PLAY;
-    playBtn.addEventListener('click', () => toggleInlineAudio(item.ratingKey, playBtn));
+    playBtn.addEventListener('click', () => toggleInlineAudio(item, playBtn));
     row.appendChild(playBtn);
   }
 
@@ -528,7 +595,7 @@ function createItemRow(item) {
   downloadButton.disabled = !item.has_plex_theme;
   downloadButton.addEventListener('click', () => {
     closeAllRowActionMenus();
-    openDownloadModal(item.ratingKey, item.title, item.has_local_theme, item.has_plex_theme);
+    openDownloadModal(item);
   });
   actionMenu.appendChild(downloadButton);
 
@@ -543,21 +610,21 @@ function createItemRow(item) {
   const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', BTN_YOUTUBE[2]);
   youtubeButton.addEventListener('click', () => {
     closeAllRowActionMenus();
-    openYoutubeModal(item.ratingKey, item.title, item.has_local_theme);
+    openYoutubeModal(item);
   });
   actionMenu.appendChild(youtubeButton);
 
   const copyButton = createActionButton('action-btn action-btn-copy', 'Copy theme from another item', BTN_COPY[2]);
   copyButton.addEventListener('click', () => {
     closeAllRowActionMenus();
-    openCopyThemeModal(item.ratingKey, item.title, item.has_local_theme);
+    openCopyThemeModal(item);
   });
   actionMenu.appendChild(copyButton);
 
   const uploadButton = createActionButton('action-btn action-btn-upload', 'Upload custom theme', BTN_UPLOAD[2]);
   uploadButton.addEventListener('click', () => {
     closeAllRowActionMenus();
-    openUploadModal(item.ratingKey, item.title, item.has_local_theme);
+    openUploadModal(item);
   });
   actionMenu.appendChild(uploadButton);
 
@@ -565,7 +632,7 @@ function createItemRow(item) {
   deleteButton.disabled = !item.has_local_theme;
   deleteButton.addEventListener('click', () => {
     closeAllRowActionMenus();
-    openDeleteModal(item.ratingKey, item.title);
+    openDeleteModal(item);
   });
   actionMenu.appendChild(deleteButton);
 
@@ -589,8 +656,8 @@ function closeAllRowActionMenus(except = null) {
 // ============================================================
 // Inline audio preview (list view + grid cards)
 // ============================================================
-function toggleInlineAudio(ratingKey, btn) {
-  const src = `/api/items/${ratingKey}/theme`;
+function toggleInlineAudio(item, btn) {
+  const src = providerItemThemePath(item);
 
   // If this button is already the active one, toggle play/pause
   if (activePlayBtn === btn) {
@@ -729,14 +796,14 @@ function updateBulkBar() {
 function toggleSelectAll(checked) {
   const visibleCards = document.querySelectorAll('.item-card');
   visibleCards.forEach((card) => {
-    const ratingKey = parseInt(card.id.replace('card-', ''), 10);
+    const selectionKey = card.dataset.selectionKey || card.id.replace('card-', '');
     const cb = card.querySelector('input[type="checkbox"]');
     if (checked) {
-      selectedItems.add(ratingKey);
+      selectedItems.add(selectionKey);
       card.classList.add('selected');
       if (cb) cb.checked = true;
     } else {
-      selectedItems.delete(ratingKey);
+      selectedItems.delete(selectionKey);
       card.classList.remove('selected');
       if (cb) cb.checked = false;
     }
@@ -758,11 +825,17 @@ function deselectAll() {
 
 async function bulkDownload() {
   if (selectedItems.size === 0) return;
-  const ratingKeys = Array.from(selectedItems);
+  if (currentLibraryProvider !== 'plex') {
+    showToast('info', 'Bulk download from provider source is only available for Plex libraries.');
+    return;
+  }
+  const ratingKeys = currentItems
+    .filter((item) => selectedItems.has(itemSelectionKey(item)))
+    .map((item) => item.ratingKey);
 
   // Check how many selected items already have a local theme
   const itemsWithTheme = currentItems.filter(
-    (item) => selectedItems.has(item.ratingKey) && item.has_local_theme
+    (item) => selectedItems.has(itemSelectionKey(item)) && item.has_local_theme
   );
 
   if (itemsWithTheme.length > 0) {
@@ -788,7 +861,10 @@ async function confirmBulkDownload(overwrite) {
 
 async function executeBulkDownload(overwrite) {
   if (selectedItems.size === 0) return;
-  const ratingKeys = Array.from(selectedItems);
+  if (currentLibraryProvider !== 'plex') return;
+  const ratingKeys = currentItems
+    .filter((item) => selectedItems.has(itemSelectionKey(item)))
+    .map((item) => item.ratingKey);
   const btn = document.getElementById('btn-bulk-download');
   const origText = btn.textContent;
   btn.disabled = true;
@@ -803,8 +879,8 @@ async function executeBulkDownload(overwrite) {
     showToast('success', `Bulk done: ${s} downloaded, ${sk} skipped, ${n} no theme, ${f} failed`);
     // Refresh item cards for successfully downloaded items
     if (s > 0 && currentLibraryId) {
-      const items = await apiGet(`/api/libraries/${currentLibraryId}/items`);
-      libraryCache.set(currentLibraryId, items);
+      const items = await apiGet(libraryItemsPath(currentLibraryProvider, currentLibraryId));
+      libraryCache.set(makeLibraryCacheKey(currentLibraryProvider, currentLibraryId), items);
       currentItems = items;
       updateStats(items);
       renderItems(items);
@@ -834,25 +910,25 @@ function filterItems() {
 // ============================================================
 // Download Modal
 // ============================================================
-function openDownloadModal(ratingKey, title, hasLocalTheme, hasPlexTheme) {
-  activeItemKey = ratingKey;
+function openDownloadModal(item) {
+  activeItemContext = { provider: item.provider || 'plex', id: String(item.id || item.ratingKey) };
   const previewAudio = document.getElementById('preview-audio');
   previewAudio.pause();
   previewAudio.src = '';
 
   document.getElementById('modal-download-message').textContent =
-    `Download the Plex theme for "${title}" and save it as theme.mp3?`;
+    `Download the Plex theme for "${item.title}" and save it as theme.mp3?`;
 
   const overwriteDiv = document.getElementById('modal-download-overwrite');
-  if (hasLocalTheme) {
+  if (item.has_local_theme) {
     overwriteDiv.classList.remove('hidden');
     document.getElementById('download-overwrite-check').checked = false;
   } else {
     overwriteDiv.classList.add('hidden');
   }
-  _syncOverwriteActionButton('btn-confirm-download', 'download-overwrite-check', hasLocalTheme);
+  _syncOverwriteActionButton('btn-confirm-download', 'download-overwrite-check', item.has_local_theme);
 
-  document.getElementById('btn-preview-plex').disabled = !hasPlexTheme;
+  document.getElementById('btn-preview-plex').disabled = !item.has_plex_theme;
   document.getElementById('modal-download-preview').classList.add('hidden');
 
   openModal('modal-download');
@@ -860,7 +936,7 @@ function openDownloadModal(ratingKey, title, hasLocalTheme, hasPlexTheme) {
 
 async function previewPlexTheme() {
   const audio = document.getElementById('preview-audio');
-  audio.src = `/api/items/${activeItemKey}/theme/preview?t=${Date.now()}`;
+  audio.src = `/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme/preview?t=${Date.now()}`;
   document.getElementById('modal-download-preview').classList.remove('hidden');
   audio.play().catch(() => {});
 }
@@ -871,14 +947,17 @@ async function confirmDownload() {
   btn.disabled = true;
   btn.textContent = 'Downloading…';
   try {
-    const data = await apiPost(`/api/items/${activeItemKey}/theme/download`, { overwrite });
+    const data = await apiPost(
+      `/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme/download`,
+      { overwrite },
+    );
     if (data.error && data.exists) {
       showToast('info', 'Theme already exists. Enable overwrite to replace it.');
     } else if (data.success) {
       showToast('success', 'Theme downloaded successfully!');
       closeModal('modal-download');
       if (!applyServerItemUpdate(data.item)) {
-        await refreshItem(activeItemKey);
+        await refreshItem(activeItemContext.id);
       }
     } else {
       showToast('error', data.error || 'Download failed');
@@ -944,12 +1023,12 @@ async function openThemerrdbModal(ratingKey, title, hasLocalTheme) {
 // ============================================================
 // Copy Theme Modal
 // ============================================================
-async function openCopyThemeModal(ratingKey, title, hasLocalTheme) {
-  activeItemKey = ratingKey;
-  document.getElementById('copy-target-item-title').textContent = title;
+async function openCopyThemeModal(item) {
+  activeItemContext = { provider: item.provider || 'plex', id: String(item.id || item.ratingKey) };
+  document.getElementById('copy-target-item-title').textContent = item.title;
 
   const overwriteDiv = document.getElementById('modal-copy-overwrite');
-  if (hasLocalTheme) {
+  if (item.has_local_theme) {
     overwriteDiv.classList.remove('hidden');
     document.getElementById('copy-overwrite-check').checked = false;
   } else {
@@ -973,8 +1052,8 @@ async function openCopyThemeModal(ratingKey, title, hasLocalTheme) {
 
     for (const library of libraries) {
       const option = document.createElement('option');
-      option.value = String(library.key);
-      option.textContent = library.title;
+      option.value = `${library.provider || 'plex'}:${library.key}`;
+      option.textContent = `[${(library.provider || 'plex').toUpperCase()}] ${library.title}`;
       sourceLibrarySelect.appendChild(option);
     }
 
@@ -987,8 +1066,11 @@ async function openCopyThemeModal(ratingKey, title, hasLocalTheme) {
       return;
     }
 
-    const preferredLibrary = libraries.find((library) => String(library.key) === String(currentLibraryId));
-    sourceLibrarySelect.value = preferredLibrary ? String(preferredLibrary.key) : String(libraries[0].key);
+    const preferredLibrary = libraries.find(
+      (library) => (library.provider || 'plex') === currentLibraryProvider && String(library.key) === String(currentLibraryId),
+    );
+    const selectedLibrary = preferredLibrary || libraries[0];
+    sourceLibrarySelect.value = `${selectedLibrary.provider || 'plex'}:${selectedLibrary.key}`;
     sourceLibrarySelect.disabled = false;
     await populateCopyThemeSources(sourceLibrarySelect.value);
   } catch (err) {
@@ -1002,20 +1084,27 @@ async function openCopyThemeModal(ratingKey, title, hasLocalTheme) {
 }
 
 async function populateCopyThemeSources(sourceLibraryId) {
+  const [sourceProvider, sourceLibraryKey] = String(sourceLibraryId).split(':', 2);
+  if (!sourceProvider || !sourceLibraryKey) {
+    return;
+  }
   const sourceItemSelect = document.getElementById('copy-theme-source-item');
   sourceItemSelect.innerHTML = '<option value="">Loading source items…</option>';
   sourceItemSelect.disabled = true;
   syncCopyThemeConfirmButton();
 
   try {
-    let items = libraryCache.get(sourceLibraryId);
+    const sourceCacheKey = makeLibraryCacheKey(sourceProvider, sourceLibraryKey);
+    let items = libraryCache.get(sourceCacheKey);
     if (!items) {
-      items = await apiGet(`/api/libraries/${sourceLibraryId}/items`);
-      libraryCache.set(sourceLibraryId, items);
+      items = await apiGet(libraryItemsPath(sourceProvider, sourceLibraryKey));
+      libraryCache.set(sourceCacheKey, items);
     }
 
     const candidates = items.filter(
-      (item) => item.has_local_theme && String(item.ratingKey) !== String(activeItemKey),
+      (candidate) => candidate.has_local_theme
+        && selectedKeyFor(candidate.provider || 'plex', String(candidate.id || candidate.ratingKey))
+          !== selectedKeyFor(activeItemContext.provider, activeItemContext.id),
     );
 
     sourceItemSelect.innerHTML = '';
@@ -1028,8 +1117,8 @@ async function populateCopyThemeSources(sourceLibraryId) {
 
     for (const item of candidates) {
       const option = document.createElement('option');
-      option.value = String(item.ratingKey);
-      option.textContent = item.year ? `${item.title} (${item.year})` : item.title;
+      option.value = `${item.provider || 'plex'}:${item.id || item.ratingKey}`;
+      option.textContent = item.year ? `[${(item.provider || 'plex').toUpperCase()}] ${item.title} (${item.year})` : `[${(item.provider || 'plex').toUpperCase()}] ${item.title}`;
       sourceItemSelect.appendChild(option);
     }
 
@@ -1053,11 +1142,12 @@ function syncCopyThemeConfirmButton() {
 }
 
 async function confirmCopyTheme() {
-  const sourceRatingKey = Number(document.getElementById('copy-theme-source-item').value);
-  if (!sourceRatingKey) {
+  const sourceValue = document.getElementById('copy-theme-source-item').value;
+  if (!sourceValue) {
     showToast('error', 'Please select a source item');
     return;
   }
+  const [sourceProvider, sourceItemId] = sourceValue.split(':', 2);
 
   const overwrite = document.getElementById('copy-overwrite-check').checked;
   const btn = document.getElementById('btn-confirm-copy-theme');
@@ -1065,14 +1155,17 @@ async function confirmCopyTheme() {
   btn.textContent = 'Copying…';
 
   try {
-    const data = await apiPost(`/api/items/${activeItemKey}/theme/copy`, { sourceRatingKey, overwrite });
+    const data = await apiPost(
+      `/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme/copy`,
+      { sourceProvider, sourceItemId, overwrite },
+    );
     if (data.error && data.exists) {
       showToast('info', 'Theme already exists. Enable overwrite to replace it.');
     } else if (data.success) {
       showToast('success', 'Theme copied successfully!');
       closeModal('modal-copy-theme');
       if (!applyServerItemUpdate(data.item)) {
-        await refreshItem(activeItemKey);
+        await refreshItem(activeItemContext.id);
       }
     } else {
       showToast('error', data.error || 'Copy failed');
@@ -1088,20 +1181,20 @@ async function confirmCopyTheme() {
 // ============================================================
 // Upload Modal
 // ============================================================
-function openUploadModal(ratingKey, title, hasLocalTheme) {
-  activeItemKey = ratingKey;
-  document.getElementById('upload-item-title').textContent = title;
+function openUploadModal(item) {
+  activeItemContext = { provider: item.provider || 'plex', id: String(item.id || item.ratingKey) };
+  document.getElementById('upload-item-title').textContent = item.title;
   document.getElementById('upload-file-input').value = '';
   document.getElementById('selected-file-name').classList.add('hidden');
 
   const overwriteDiv = document.getElementById('modal-upload-overwrite');
-  if (hasLocalTheme) {
+  if (item.has_local_theme) {
     overwriteDiv.classList.remove('hidden');
     document.getElementById('upload-overwrite-check').checked = false;
   } else {
     overwriteDiv.classList.add('hidden');
   }
-  _syncOverwriteActionButton('btn-confirm-upload', 'upload-overwrite-check', hasLocalTheme);
+  _syncOverwriteActionButton('btn-confirm-upload', 'upload-overwrite-check', item.has_local_theme);
 
   openModal('modal-upload');
 }
@@ -1127,7 +1220,7 @@ async function confirmUpload() {
   formData.append('overwrite', overwrite ? 'true' : 'false');
 
   try {
-    const resp = await fetch(`/api/items/${activeItemKey}/theme/upload`, {
+    const resp = await fetch(`/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme/upload`, {
       method: 'POST',
       body: formData,
     });
@@ -1138,7 +1231,7 @@ async function confirmUpload() {
       showToast('success', 'Theme uploaded successfully!');
       closeModal('modal-upload');
       if (!applyServerItemUpdate(data.item)) {
-        await refreshItem(activeItemKey);
+        await refreshItem(activeItemContext.id);
       }
     } else {
       showToast('error', data.error || 'Upload failed');
@@ -1153,16 +1246,16 @@ async function confirmUpload() {
 // ============================================================
 let currentlyPlayingVideoId = null;
 
-function openYoutubeModal(ratingKey, title, hasLocalTheme) {
-  activeItemKey = ratingKey;
-  document.getElementById('youtube-item-title').textContent = title;
+function openYoutubeModal(item) {
+  activeItemContext = { provider: item.provider || 'plex', id: String(item.id || item.ratingKey) };
+  document.getElementById('youtube-item-title').textContent = item.title;
   document.getElementById('youtube-url-input').value = '';
   document.getElementById('youtube-progress').classList.add('hidden');
   document.getElementById('youtube-search-results').innerHTML = '';
   _stopYoutubePlayer();
 
   const overwriteDiv = document.getElementById('modal-youtube-overwrite');
-  if (hasLocalTheme) {
+  if (item.has_local_theme) {
     overwriteDiv.classList.remove('hidden');
     document.getElementById('youtube-overwrite-check').checked = false;
   } else {
@@ -1170,7 +1263,7 @@ function openYoutubeModal(ratingKey, title, hasLocalTheme) {
   }
   _syncOverwriteActionButton('btn-confirm-youtube', 'youtube-overwrite-check', hasLocalTheme);
 
-  const defaultQuery = `${title} theme song`;
+  const defaultQuery = `${item.title} theme song`;
   document.getElementById('youtube-search-input').value = defaultQuery;
 
   openModal('modal-youtube');
@@ -1325,7 +1418,10 @@ async function confirmYoutube() {
   progressEl.classList.remove('hidden');
 
   try {
-    const data = await apiPost(`/api/items/${activeItemKey}/theme/youtube`, { url, overwrite });
+    const data = await apiPost(
+      `/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme/youtube`,
+      { url, overwrite },
+    );
     progressEl.classList.add('hidden');
     if (data.error && data.exists) {
       showToast('info', 'Theme already exists. Enable overwrite to replace it.');
@@ -1333,7 +1429,7 @@ async function confirmYoutube() {
       showToast('success', 'YouTube theme downloaded successfully!');
       closeModal('modal-youtube');
       if (!applyServerItemUpdate(data.item)) {
-        await refreshItem(activeItemKey);
+        await refreshItem(activeItemContext.id);
       }
     } else {
       showToast('error', data.error || 'YouTube download failed');
@@ -1384,21 +1480,21 @@ async function confirmThemerrdb() {
 // ============================================================
 // Delete Modal
 // ============================================================
-function openDeleteModal(ratingKey, title) {
-  activeItemKey = ratingKey;
-  document.getElementById('delete-item-title').textContent = title;
+function openDeleteModal(item) {
+  activeItemContext = { provider: item.provider || 'plex', id: String(item.id || item.ratingKey) };
+  document.getElementById('delete-item-title').textContent = item.title;
   openModal('modal-delete');
 }
 
 async function confirmDelete() {
   try {
-    const resp = await fetch(`/api/items/${activeItemKey}/theme`, { method: 'DELETE' });
+    const resp = await fetch(`/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme`, { method: 'DELETE' });
     const data = await resp.json();
     if (data.success) {
       showToast('success', 'Theme deleted.');
       closeModal('modal-delete');
       if (!applyServerItemUpdate(data.item)) {
-        await refreshItem(activeItemKey);
+        await refreshItem(activeItemContext.id);
       }
     } else {
       showToast('error', data.error || 'Delete failed');
@@ -1414,18 +1510,21 @@ async function confirmDelete() {
 function applyServerItemUpdate(updatedItem) {
   if (!updatedItem || !currentLibraryId || !Array.isArray(currentItems)) return false;
 
-  const itemIndex = currentItems.findIndex((item) => String(item.ratingKey) === String(updatedItem.ratingKey));
+  const updatedKey = selectedKeyFor(updatedItem.provider || 'plex', String(updatedItem.id || updatedItem.ratingKey));
+  const itemIndex = currentItems.findIndex(
+    (item) => selectedKeyFor(item.provider || 'plex', String(item.id || item.ratingKey)) === updatedKey,
+  );
   if (itemIndex === -1) return false;
 
   const nextItems = [...currentItems];
   nextItems[itemIndex] = updatedItem;
   currentItems = nextItems;
-  libraryCache.set(currentLibraryId, nextItems);
+  libraryCache.set(makeLibraryCacheKey(currentLibraryProvider, currentLibraryId), nextItems);
 
   if (!updatedItem.has_local_theme
       && activeAudio
       && activeAudio.src
-      && activeAudio.src.includes(`/api/items/${updatedItem.ratingKey}/theme`)) {
+      && activeAudio.src.includes(providerItemThemePath(updatedItem))) {
     stopInlineAudio();
   }
 
@@ -1438,12 +1537,12 @@ function applyServerItemUpdate(updatedItem) {
 async function refreshItem(ratingKey) {
   if (!currentLibraryId) return;
   try {
-    const items = await apiGet(`/api/libraries/${currentLibraryId}/items`);
-    libraryCache.set(currentLibraryId, items);
+    const items = await apiGet(libraryItemsPath(currentLibraryProvider, currentLibraryId));
+    libraryCache.set(makeLibraryCacheKey(currentLibraryProvider, currentLibraryId), items);
     currentItems = items;
-    const updated = items.find((item) => item.ratingKey === ratingKey);
+    const updated = items.find((item) => String(item.id || item.ratingKey) === String(ratingKey));
     if (updated) {
-      const card = document.getElementById(`card-${ratingKey}`);
+      const card = document.getElementById(`card-${itemSelectionKey(updated)}`);
       if (card) {
         // Stop inline audio if it belongs to this card
         if (activePlayBtn && card.contains(activePlayBtn)) {
@@ -1466,6 +1565,8 @@ async function refreshItem(ratingKey) {
 function showSettingsPage(event) {
   if (event) event.preventDefault();
   currentLibraryId = null;
+  currentLibraryProvider = null;
+  activeItemContext = null;
   stopInlineAudio();
 
   document.getElementById('welcome-screen').classList.add('hidden');
@@ -1502,13 +1603,13 @@ async function settingsTestPlex() {
 }
 
 async function settingsRefreshLibraries() {
-  showSettingsResult(true, 'Refreshing Plex libraries…');
+  showSettingsResult(true, 'Refreshing libraries…');
   try {
     libraryCache.clear();
     await loadLibraries();
     // Rebuild server-side item cache in the background (don't await — it takes time)
     apiPost('/api/settings/refresh-cache', {}).catch(() => {});
-    showSettingsResult(true, '✓ Plex libraries refreshed successfully. Item cache is rebuilding in the background.');
+    showSettingsResult(true, '✓ Libraries refreshed successfully. Item cache is rebuilding in the background.');
   } catch (err) {
     showSettingsResult(false, `✗ Failed to refresh libraries: ${err}`);
   }

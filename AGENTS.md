@@ -7,7 +7,8 @@ This repository is prepared for AI coding agents. Use this guide for safe, consi
 - **Language**: Python 3.11
 - **Runtime**: Docker / Docker Compose
 - **Web UI entry point**: `web_app.py` (Flask, port 8080)
-- **Goal**: Manage Plex theme music (`theme.mp3`) for TV shows and movies via Web UI
+- **CLI entry point**: `plex_theme_downloader.py`
+- **Goal**: Manage theme music (`theme.mp3`) for Plex and Jellyfin libraries via Web UI (Plex, ThemerrDB, and YouTube download sources)
 
 ## Setup and Validation Commands
 
@@ -32,6 +33,7 @@ docker build -t themarr:test .
 Primary environment variables are defined in `.env.example`:
 
 - `PLEX_URL`, `PLEX_TOKEN` — Plex server credentials
+- `JELLYFIN_URL`, `JELLYFIN_API_KEY`, `JELLYFIN_USER_ID` — Jellyfin server credentials/user context
 - `TV_SHOWS_HOST_PATH`, `MOVIES_HOST_PATH` — host paths mounted into container
 - `FLASK_DEBUG` — Flask debug mode
 - `DEFAULT_THEME` — default UI theme: `dark` or `light`

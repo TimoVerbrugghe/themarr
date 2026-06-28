@@ -16,6 +16,7 @@ import requests as http_requests
 import yt_dlp
 from flask import Flask, Response, jsonify, render_template, request, send_file
 from plexapi.server import PlexServer
+from werkzeug.utils import safe_join
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -27,6 +28,9 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 MAX_YOUTUBE_DURATION_SECONDS = 15 * 60
 MAX_BULK_ITEMS = 100
 ASSET_VERSION = str(int(time.time()))
+PLEX_RETRY_ATTEMPTS_DEFAULT = 10
+PLEX_RETRY_DELAY_DEFAULT = 30  # seconds between retry attempts
+JELLYFIN_TIMEOUT_SECONDS = 30
 ALLOWED_UPLOAD_TYPES = {'audio/mpeg', 'audio/mp3', 'application/octet-stream'}
 ALLOWED_YOUTUBE_HOSTS = {'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'}
 THEMERRDB_API_BASE = 'https://app.lizardbyte.dev/ThemerrDB'
@@ -48,6 +52,8 @@ _theme_hydration_status = {
     'sections_completed': 0,
 }
 _theme_hydration_status_lock = threading.Lock()
+_jellyfin_user_id_cache = {'value': None}
+_jellyfin_user_id_lock = threading.Lock()
 
 def error_response(message, status_code=500, exc=None):
     """Return a safe JSON error response while logging internal details."""
@@ -67,6 +73,262 @@ def get_plex():
     return PlexServer(plex_url.rstrip('/'), plex_token)
 
 
+def jellyfin_is_configured():
+    """Return True when Jellyfin credentials are configured."""
+    jellyfin_url = (os.getenv('JELLYFIN_URL') or '').strip()
+    jellyfin_api_key = (os.getenv('JELLYFIN_API_KEY') or '').strip()
+    return bool(jellyfin_url and jellyfin_api_key)
+
+
+def get_jellyfin():
+    """Get Jellyfin connection settings from environment variables."""
+    jellyfin_url = (os.getenv('JELLYFIN_URL') or '').strip()
+    jellyfin_api_key = (os.getenv('JELLYFIN_API_KEY') or '').strip()
+    jellyfin_user_id = (os.getenv('JELLYFIN_USER_ID') or '').strip() or None
+    if not jellyfin_url or not jellyfin_api_key:
+        raise ValueError('JELLYFIN_URL and JELLYFIN_API_KEY environment variables must be set')
+    return {
+        'url': jellyfin_url.rstrip('/'),
+        'api_key': jellyfin_api_key,
+        'user_id': jellyfin_user_id,
+    }
+
+
+def jellyfin_session_get(jellyfin, path, **kwargs):
+    """Perform an authenticated GET against Jellyfin."""
+    headers = dict(kwargs.pop('headers', {}) or {})
+    headers['X-Emby-Token'] = jellyfin['api_key']
+    if path.startswith('http://') or path.startswith('https://'):
+        url = path
+    else:
+        url = f"{jellyfin['url']}{path}"
+    return http_requests.get(url, headers=headers, timeout=JELLYFIN_TIMEOUT_SECONDS, **kwargs)
+
+
+def jellyfin_session_post(jellyfin, path, **kwargs):
+    """Perform an authenticated POST against Jellyfin."""
+    headers = dict(kwargs.pop('headers', {}) or {})
+    headers['X-Emby-Token'] = jellyfin['api_key']
+    if path.startswith('http://') or path.startswith('https://'):
+        url = path
+    else:
+        url = f"{jellyfin['url']}{path}"
+    return http_requests.post(url, headers=headers, timeout=JELLYFIN_TIMEOUT_SECONDS, **kwargs)
+
+
+def get_jellyfin_user_id(jellyfin):
+    """Resolve Jellyfin user id from env or Jellyfin users API."""
+    explicit_user_id = jellyfin.get('user_id')
+    if explicit_user_id:
+        return explicit_user_id
+
+    with _jellyfin_user_id_lock:
+        cached_user_id = _jellyfin_user_id_cache.get('value')
+        if cached_user_id:
+            return cached_user_id
+
+        response = jellyfin_session_get(jellyfin, '/Users')
+        response.raise_for_status()
+        users = response.json()
+        if not isinstance(users, list) or not users:
+            raise ValueError('Jellyfin did not return any users; set JELLYFIN_USER_ID explicitly')
+
+        user_id = users[0].get('Id')
+        if not user_id:
+            raise ValueError('Failed to resolve Jellyfin user id from /Users response')
+
+        _jellyfin_user_id_cache['value'] = user_id
+        return user_id
+
+
+def get_jellyfin_item_local_path(item):
+    """Get local filesystem path for a Jellyfin item dict."""
+    raw_path = item.get('Path')
+    if not raw_path:
+        return None
+    candidate = Path(raw_path)
+    item_type = (item.get('Type') or '').lower()
+    if item_type == 'movie' and candidate.suffix:
+        return candidate.parent
+    return candidate
+
+
+def _configured_media_roots():
+    """Return configured media root paths used to constrain filesystem operations."""
+    roots = []
+    for env_name in ('TV_SHOWS_HOST_PATH', 'MOVIES_HOST_PATH'):
+        raw_value = (os.getenv(env_name) or '').strip()
+        if not raw_value:
+            continue
+        try:
+            roots.append(Path(raw_value).resolve(strict=False))
+        except OSError:
+            logger.warning('Ignoring invalid %s path configuration', env_name)
+    return roots
+
+
+def _is_within_root(path, root):
+    """Return True when *path* is at or below *root*."""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_local_media_path(local_path):
+    """Normalize and validate local media path for safe filesystem usage."""
+    if local_path is None:
+        return None
+
+    local_path_str = str(local_path)
+    sanitized = safe_join('/', local_path_str.lstrip('/'))
+    if sanitized is None:
+        raise ValueError('Invalid local media path')
+
+    normalized = os.path.normpath(sanitized)
+    if not normalized.startswith('/'):
+        raise ValueError('Invalid local media path')
+
+    roots = _configured_media_roots()
+    normalized_path = Path(normalized)
+    if roots and not any(_is_within_root(normalized_path, root) for root in roots):
+        raise ValueError('Item path is outside configured media roots')
+
+    return normalized_path
+
+
+def _theme_file_path(local_path):
+    """Return validated theme file path for a validated media directory."""
+    validated_local_path = _validate_local_media_path(local_path)
+    if not validated_local_path:
+        return None
+    return validated_local_path / 'theme.mp3'
+
+
+def _normalize_provider(provider):
+    normalized = (provider or '').strip().lower()
+    if normalized not in {'plex', 'jellyfin'}:
+        raise ValueError('provider must be either "plex" or "jellyfin"')
+    return normalized
+
+
+def _serialize_jellyfin_item(item, library_id, theme_dirs=None):
+    local_path = get_jellyfin_item_local_path(item)
+    theme_exists = False
+    theme_size = 0
+    if local_path:
+        if theme_dirs is not None:
+            theme_size = theme_dirs.get(str(local_path), 0)
+            theme_exists = theme_size > 0
+
+    item_type = (item.get('Type') or '').lower()
+    media_type = 'show' if item_type == 'series' else 'movie'
+    item_id = str(item.get('Id'))
+    return {
+        'id': item_id,
+        'ratingKey': item_id,
+        'provider': 'jellyfin',
+        'library_id': str(library_id),
+        'title': item.get('Name'),
+        'year': item.get('ProductionYear'),
+        'thumb': None,
+        'type': media_type,
+        'has_plex_theme': False,
+        'has_local_theme': theme_exists,
+        'theme_size': theme_size,
+        'local_path': str(local_path) if local_path else None,
+    }
+
+
+def _get_jellyfin_library_count(jellyfin, user_id, library_id):
+    """Return item count for a Jellyfin TV/Movie library."""
+    response = jellyfin_session_get(
+        jellyfin,
+        f'/Users/{user_id}/Items',
+        params={
+            'ParentId': str(library_id),
+            'IncludeItemTypes': 'Series,Movie',
+            'Recursive': 'true',
+            'Limit': 1,
+        },
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return int(payload.get('TotalRecordCount', 0))
+
+
+def _get_jellyfin_libraries():
+    """Return Jellyfin TV and Movie libraries."""
+    jellyfin = get_jellyfin()
+    user_id = get_jellyfin_user_id(jellyfin)
+    response = jellyfin_session_get(jellyfin, '/Library/VirtualFolders')
+    response.raise_for_status()
+    folders = response.json()
+
+    result = []
+    for folder in folders:
+        collection_type = (folder.get('CollectionType') or '').lower()
+        if collection_type not in {'tvshows', 'movies'}:
+            continue
+        library_id = folder.get('ItemId') or folder.get('Id')
+        if not library_id:
+            continue
+        media_type = 'show' if collection_type == 'tvshows' else 'movie'
+        total_size = _get_jellyfin_library_count(jellyfin, user_id, library_id)
+        result.append({
+            'id': str(library_id),
+            'key': str(library_id),
+            'title': folder.get('Name') or 'Unnamed Library',
+            'type': media_type,
+            'thumb': None,
+            'totalSize': total_size,
+            'provider': 'jellyfin',
+        })
+    return result
+
+
+def _get_jellyfin_item(jellyfin_item_id):
+    """Fetch a Jellyfin item for the current Jellyfin user."""
+    jellyfin = get_jellyfin()
+    user_id = get_jellyfin_user_id(jellyfin)
+    response = jellyfin_session_get(
+        jellyfin,
+        f'/Users/{user_id}/Items/{jellyfin_item_id}',
+        params={'Fields': 'Path,ProductionYear,ParentId'},
+    )
+    response.raise_for_status()
+    return jellyfin, user_id, response.json()
+
+
+def _get_item_context(provider, item_id):
+    """Return provider-specific item context for theme operations."""
+    provider = _normalize_provider(provider)
+    if provider == 'plex':
+        plex = get_plex()
+        item = plex.fetchItem(int(item_id))
+        local_path = _validate_local_media_path(get_item_local_path(item))
+        return {
+            'provider': 'plex',
+            'item_id': str(item.ratingKey),
+            'title': item.title,
+            'item': item,
+            'client': plex,
+            'local_path': local_path,
+            'has_plex_theme': bool(getattr(item, 'theme', None)),
+        }
+
+    jellyfin, _, item = _get_jellyfin_item(item_id)
+    local_path = _validate_local_media_path(get_jellyfin_item_local_path(item))
+    return {
+        'provider': 'jellyfin',
+        'item_id': str(item.get('Id')),
+        'title': item.get('Name') or 'Unknown',
+        'item': item,
+        'client': jellyfin,
+        'local_path': local_path,
+        'has_plex_theme': False,
+    }
 def plex_session_get(plex, url, **kwargs):
     """Fetch Plex media using plexapi's authenticated session."""
     # plexapi does not expose a higher-level helper for arbitrary media proxying,
@@ -353,7 +615,7 @@ def _process_plex_library_new(rating_key):
         )
 
 
-def item_to_dict(item, theme_dirs=None):
+def item_to_dict(item, theme_dirs=None, provider='plex', library_id=None):
     """Serialize a Plex item to a dict for JSON response.
 
     If *theme_dirs* is provided (a dict from scan_local_theme_dirs), theme
@@ -380,7 +642,10 @@ def item_to_dict(item, theme_dirs=None):
         has_themerrdb_theme = themerrdb_data is not None
 
     return {
+        'id': str(item.ratingKey),
         'ratingKey': item.ratingKey,
+        'provider': provider,
+        'library_id': str(library_id) if library_id is not None else None,
         'title': item.title,
         'year': getattr(item, 'year', None),
         'thumb': item.thumb,
@@ -399,42 +664,82 @@ def item_to_dict(item, theme_dirs=None):
 # Library item cache
 # ============================================================
 
-def _build_library_items(section_id, include_theme_state=True):
-    """Fetch and return sorted item dicts for a Plex section (no caching)."""
+def _build_library_items(section_id, include_theme_state=True, provider='plex'):
+    """Fetch and return sorted item dicts for a provider library section (no caching)."""
     started = time.perf_counter()
-    plex = get_plex()
-    section = plex.library.sectionByID(section_id)
+    provider = _normalize_provider(provider)
 
-    fetch_started = time.perf_counter()
-    items = section.all()
-    fetch_duration = time.perf_counter() - fetch_started
+    if provider == 'plex':
+        plex = get_plex()
+        section = plex.library.sectionByID(section_id)
 
-    if include_theme_state:
-        section_locations = getattr(section, 'locations', None)
-        if isinstance(section_locations, (list, tuple, set)):
-            base_paths = {path for path in section_locations if isinstance(path, str) and path}
+        fetch_started = time.perf_counter()
+        items = section.all()
+        fetch_duration = time.perf_counter() - fetch_started
+
+        if include_theme_state:
+            section_locations = getattr(section, 'locations', None)
+            if isinstance(section_locations, (list, tuple, set)):
+                base_paths = {path for path in section_locations if isinstance(path, str) and path}
+            else:
+                base_paths = set()
+            if not base_paths:
+                base_paths = get_section_base_paths(plex)
+            scan_started = time.perf_counter()
+            theme_dirs = scan_local_theme_dirs(base_paths)
+            scan_duration = time.perf_counter() - scan_started
         else:
-            base_paths = set()
-        if not base_paths:
-            base_paths = get_section_base_paths(plex)
-        scan_started = time.perf_counter()
-        theme_dirs = scan_local_theme_dirs(base_paths)
-        scan_duration = time.perf_counter() - scan_started
-    else:
-        theme_dirs = {}
-        scan_duration = 0.0
+            theme_dirs = {}
+            scan_duration = 0.0
 
-    result = [item_to_dict(item, theme_dirs=theme_dirs) for item in items]
+        result = [item_to_dict(item, theme_dirs=theme_dirs, provider='plex', library_id=section_id) for item in items]
+    else:
+        jellyfin = get_jellyfin()
+        user_id = get_jellyfin_user_id(jellyfin)
+        fetch_started = time.perf_counter()
+        response = jellyfin_session_get(
+            jellyfin,
+            f'/Users/{user_id}/Items',
+            params={
+                'ParentId': str(section_id),
+                'IncludeItemTypes': 'Series,Movie',
+                'Recursive': 'true',
+                'Fields': 'Path,ProductionYear',
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        items = payload.get('Items', [])
+        fetch_duration = time.perf_counter() - fetch_started
+
+        if include_theme_state:
+            base_paths = set()
+            for item in items:
+                local_path = get_jellyfin_item_local_path(item)
+                if local_path:
+                    base_paths.add(str(local_path.parent if local_path.suffix else local_path))
+            scan_started = time.perf_counter()
+            theme_dirs = scan_local_theme_dirs(base_paths) if base_paths else {}
+            scan_duration = time.perf_counter() - scan_started
+        else:
+            theme_dirs = {}
+            scan_duration = 0.0
+
+        result = [
+            _serialize_jellyfin_item(item, section_id, theme_dirs=theme_dirs)
+            for item in items
+        ]
+
     result.sort(key=lambda item: item['title'].lower())
     if include_theme_state:
         logger.info(
-            'Built section %s item payload: %d items (theme scan %.2fs, plex fetch %.2fs, total %.2fs)',
-            section_id, len(result), scan_duration, fetch_duration, time.perf_counter() - started,
+            'Built %s section %s item payload: %d items (theme scan %.2fs, fetch %.2fs, total %.2fs)',
+            provider, section_id, len(result), scan_duration, fetch_duration, time.perf_counter() - started,
         )
     else:
         logger.info(
-            'Built section %s metadata payload: %d items (plex fetch %.2fs, total %.2fs)',
-            section_id, len(result), fetch_duration, time.perf_counter() - started,
+            'Built %s section %s metadata payload: %d items (fetch %.2fs, total %.2fs)',
+            provider, section_id, len(result), fetch_duration, time.perf_counter() - started,
         )
     return result
 
@@ -445,6 +750,8 @@ def _invalidate_library_cache():
         _library_cache.clear()
     with _poster_cache_lock:
         _poster_cache.clear()
+    with _jellyfin_user_id_lock:
+        _jellyfin_user_id_cache['value'] = None
     with _theme_hydration_status_lock:
         _theme_hydration_status.update({
             'running': True,
@@ -456,7 +763,7 @@ def _invalidate_library_cache():
 
 def _get_section_build_lock(section_id):
     """Return a per-section lock to avoid duplicate cache builds under load."""
-    section_id = int(section_id)
+    section_id = str(section_id)
     with _section_build_locks_lock:
         section_lock = _section_build_locks.get(section_id)
         if section_lock is None:
@@ -500,27 +807,31 @@ def _get_theme_hydration_status():
         return dict(_theme_hydration_status)
 
 
-def _get_cached_item(rating_key):
-    """Return a cached item dict by ratingKey, or None if not cached."""
+def _get_cached_item(rating_key, provider=None):
+    """Return a cached item dict by ratingKey and optional provider, or None."""
     target = str(rating_key)
+    provider = (provider or '').strip().lower() or None
     with _library_cache_lock:
         for section_items in _library_cache.values():
             for cached_item in section_items:
-                if str(cached_item.get('ratingKey')) == target:
-                    return cached_item
+                if str(cached_item.get('ratingKey')) != target:
+                    continue
+                if provider and (cached_item.get('provider') or 'plex') != provider:
+                    continue
+                return cached_item
     return None
 
 
-def _get_cached_poster(rating_key):
-    """Return cached poster payload dict for *rating_key*, or None."""
+def _get_cached_poster(rating_key, provider='plex'):
+    """Return cached poster payload dict for *(provider, rating_key)*, or None."""
     with _poster_cache_lock:
-        return _poster_cache.get(int(rating_key))
+        return _poster_cache.get(f'{provider}:{rating_key}')
 
 
-def _set_cached_poster(rating_key, content, content_type):
+def _set_cached_poster(rating_key, content, content_type, provider='plex'):
     """Store poster bytes in the in-memory poster cache."""
     with _poster_cache_lock:
-        _poster_cache[int(rating_key)] = {
+        _poster_cache[f'{provider}:{rating_key}'] = {
             'content': content,
             'content_type': content_type,
         }
@@ -605,6 +916,34 @@ def _sync_cached_item(item):
             if updated:
                 break
     return updated_item, updated
+
+
+def _sync_cached_item_theme_state(provider, item_id):
+    """Refresh has_local_theme/theme_size for a cached item by provider/id."""
+    provider = _normalize_provider(provider)
+    target_id = str(item_id)
+    with _library_cache_lock:
+        for section_key, section_items in _library_cache.items():
+            for idx, cached_item in enumerate(section_items):
+                cached_provider = cached_item.get('provider') or 'plex'
+                if cached_provider != provider or str(cached_item.get('id') or cached_item.get('ratingKey')) != target_id:
+                    continue
+                local_path = cached_item.get('local_path')
+                theme_size = 0
+                if local_path:
+                    theme_path = Path(local_path) / 'theme.mp3'
+                    if theme_path.exists():
+                        try:
+                            theme_size = theme_path.stat().st_size
+                        except OSError:
+                            theme_size = 0
+                updated = dict(cached_item)
+                updated['has_local_theme'] = theme_size > 0
+                updated['theme_size'] = theme_size
+                section_items[idx] = updated
+                _library_cache[section_key] = section_items
+                return updated, True
+    return None, False
 
 
 def _kick_off_cache_warmup():
@@ -744,11 +1083,14 @@ def get_status():
 
 @app.route('/api/libraries')
 def get_libraries():
-    """Return list of TV and Movie libraries from Plex."""
+    """Return list of TV and Movie libraries from Plex and Jellyfin."""
+    result = []
+    plex_error = None
+    jellyfin_error = None
+
     try:
         plex = get_plex()
         sections = plex.library.sections()
-        result = []
         for section in sections:
             if section.type in ('show', 'movie'):
                 result.append({
@@ -759,10 +1101,27 @@ def get_libraries():
                     'type': section.type,
                     'thumb': section.thumb,
                     'totalSize': section.totalSize,
+                    'provider': 'plex',
                 })
-        return jsonify(result)
     except Exception as exc:
-        return error_response('Failed to get libraries', exc=exc)
+        plex_error = exc
+
+    if jellyfin_is_configured():
+        try:
+            result.extend(_get_jellyfin_libraries())
+        except Exception as exc:
+            jellyfin_error = exc
+
+    if result:
+        return jsonify(result)
+
+    if plex_error and jellyfin_error:
+        return error_response('Failed to get libraries from Plex and Jellyfin', exc=f'{plex_error}; {jellyfin_error}')
+    if plex_error:
+        return error_response('Failed to get libraries', exc=plex_error)
+    if jellyfin_error:
+        return error_response('Failed to get libraries', exc=jellyfin_error)
+    return jsonify([])
 
 
 @app.route('/api/cache/status')
@@ -787,7 +1146,7 @@ def get_library_items(section_id):
         if cached is not None:
             return jsonify(cached)
         try:
-            result = _build_library_items(section_id)
+            result = _build_library_items(section_id, provider='plex')
             with _library_cache_lock:
                 _library_cache[section_id] = result
             return jsonify(result)
@@ -795,16 +1154,52 @@ def get_library_items(section_id):
             return error_response(f'Failed to get items for section {section_id}', exc=exc)
 
 
+@app.route('/api/libraries/<provider>/<path:section_id>/items')
+def get_library_items_by_provider(provider, section_id):
+    """Return all items in a provider library section."""
+    try:
+        provider = _normalize_provider(provider)
+    except ValueError as exc:
+        return error_response('Invalid provider', status_code=400, exc=exc)
+
+    if provider == 'plex':
+        try:
+            plex_section_id = int(section_id)
+        except ValueError as exc:
+            return error_response('Plex library id must be an integer', status_code=400, exc=exc)
+        return get_library_items(plex_section_id)
+
+    cache_key = f'jellyfin:{section_id}'
+    with _library_cache_lock:
+        cached = _library_cache.get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    section_lock = _get_section_build_lock(cache_key)
+    with section_lock:
+        with _library_cache_lock:
+            cached = _library_cache.get(cache_key)
+        if cached is not None:
+            return jsonify(cached)
+        try:
+            result = _build_library_items(section_id, provider='jellyfin')
+            with _library_cache_lock:
+                _library_cache[cache_key] = result
+            return jsonify(result)
+        except Exception as exc:
+            return error_response(f'Failed to get items for {provider} section {section_id}', exc=exc)
+
+
 @app.route('/api/poster/<int:rating_key>')
 def get_poster(rating_key):
     """Proxy Plex poster image to avoid CORS/token issues in browser."""
     try:
-        cached_poster = _get_cached_poster(rating_key)
+        cached_poster = _get_cached_poster(rating_key, provider='plex')
         if cached_poster is not None:
             return Response(cached_poster['content'], mimetype=cached_poster['content_type'])
 
         plex = get_plex()
-        cached_item = _get_cached_item(rating_key)
+        cached_item = _get_cached_item(rating_key, provider='plex')
         thumb = cached_item.get('thumb') if cached_item else None
         if not thumb:
             item = plex.fetchItem(rating_key)
@@ -814,10 +1209,39 @@ def get_poster(rating_key):
             return jsonify({'error': 'No poster available'}), 404
 
         content, content_type = _fetch_poster_bytes(plex, thumb, timeout=10)
-        _set_cached_poster(rating_key, content, content_type)
+        _set_cached_poster(rating_key, content, content_type, provider='plex')
         return Response(content, mimetype=content_type)
     except Exception as exc:
         return error_response(f'Failed to get poster for {rating_key}', exc=exc)
+
+
+@app.route('/api/poster/<provider>/<path:item_id>')
+def get_provider_poster(provider, item_id):
+    """Proxy provider poster image to avoid CORS/token issues in browser."""
+    try:
+        provider = _normalize_provider(provider)
+    except ValueError as exc:
+        return error_response('Invalid provider', status_code=400, exc=exc)
+
+    if provider == 'plex':
+        try:
+            return get_poster(int(item_id))
+        except ValueError as exc:
+            return error_response('Plex item id must be an integer', status_code=400, exc=exc)
+
+    try:
+        cached_poster = _get_cached_poster(item_id, provider='jellyfin')
+        if cached_poster is not None:
+            return Response(cached_poster['content'], mimetype=cached_poster['content_type'])
+
+        jellyfin = get_jellyfin()
+        response = jellyfin_session_get(jellyfin, f'/Items/{item_id}/Images/Primary')
+        response.raise_for_status()
+        content_type = response.headers.get('content-type', 'image/jpeg')
+        _set_cached_poster(item_id, response.content, content_type, provider='jellyfin')
+        return Response(response.content, mimetype=content_type)
+    except Exception as exc:
+        return error_response(f'Failed to get poster for {provider} item {item_id}', exc=exc)
 
 
 @app.route('/api/items/<int:rating_key>/theme', methods=['GET'])
@@ -1243,6 +1667,233 @@ def delete_theme(rating_key):
         return jsonify({'success': True, 'item': item_dict})
     except Exception as exc:
         return error_response(f'Failed to delete theme for {rating_key}', exc=exc)
+
+
+# Provider-aware theme endpoints (Plex + Jellyfin)
+@app.route('/api/items/<provider>/<path:item_id>/theme', methods=['GET'])
+def get_provider_theme(provider, item_id):
+    """Stream the local theme.mp3 file for provider items."""
+    try:
+        provider = _normalize_provider(provider)
+        context = _get_item_context(provider, item_id)
+        theme_path = _theme_file_path(context['local_path'])
+        if not theme_path:
+            return jsonify({'error': 'Cannot determine local path for item'}), 404
+        if not theme_path.exists() or theme_path.stat().st_size == 0:
+            return jsonify({'error': 'No theme file found'}), 404
+        return send_file(str(theme_path), mimetype='audio/mpeg', conditional=True)
+    except ValueError as exc:
+        return error_response('Invalid provider or item identifier', status_code=400, exc=exc)
+    except Exception as exc:
+        return error_response(f'Failed to serve theme for {provider} item {item_id}', exc=exc)
+
+
+@app.route('/api/items/<provider>/<path:item_id>/theme/preview')
+def preview_provider_theme(provider, item_id):
+    """Preview theme from provider source when supported."""
+    try:
+        provider = _normalize_provider(provider)
+    except ValueError as exc:
+        return error_response('Invalid provider', status_code=400, exc=exc)
+
+    if provider != 'plex':
+        return jsonify({'error': 'Theme preview from provider source is only supported for Plex items'}), 400
+    try:
+        return preview_plex_theme(int(item_id))
+    except ValueError as exc:
+        return error_response('Plex item id must be an integer', status_code=400, exc=exc)
+
+
+@app.route('/api/items/<provider>/<path:item_id>/theme/download', methods=['POST'])
+def download_provider_theme(provider, item_id):
+    """Download theme from provider source when supported."""
+    try:
+        provider = _normalize_provider(provider)
+    except ValueError as exc:
+        return error_response('Invalid provider', status_code=400, exc=exc)
+
+    if provider != 'plex':
+        return jsonify({'error': 'Downloading from provider source is only supported for Plex items'}), 400
+    try:
+        return download_theme_from_plex(int(item_id))
+    except ValueError as exc:
+        return error_response('Plex item id must be an integer', status_code=400, exc=exc)
+
+
+@app.route('/api/items/<provider>/<path:item_id>/theme/copy', methods=['POST'])
+def copy_provider_theme_from_item(provider, item_id):
+    """Copy a local theme.mp3 from one provider item to another."""
+    try:
+        provider = _normalize_provider(provider)
+        data = request.get_json(silent=True) or {}
+        source_provider = _normalize_provider(data.get('sourceProvider') or provider)
+        source_item_id = data.get('sourceItemId')
+        if source_item_id is None:
+            return jsonify({'error': 'sourceItemId is required'}), 400
+        source_item_id = str(source_item_id)
+
+        if source_provider == provider and str(source_item_id) == str(item_id):
+            return jsonify({'error': 'Source item must be different from target item'}), 400
+
+        overwrite = data.get('overwrite', False)
+
+        target_context = _get_item_context(provider, item_id)
+        source_context = _get_item_context(source_provider, source_item_id)
+
+        target_local_path = _validate_local_media_path(target_context['local_path'])
+        if not target_local_path:
+            return jsonify({'error': 'Cannot determine local path for target item'}), 404
+
+        source_local_path = _validate_local_media_path(source_context['local_path'])
+        if not source_local_path:
+            return jsonify({'error': 'Cannot determine local path for source item'}), 404
+
+        source_theme_path = _theme_file_path(source_local_path)
+        if not source_theme_path.exists() or source_theme_path.stat().st_size == 0:
+            return jsonify({'error': 'Source item has no local theme to copy'}), 404
+
+        target_theme_path = _theme_file_path(target_local_path)
+        if target_theme_path.exists() and target_theme_path.stat().st_size > 0 and not overwrite:
+            return jsonify({'error': 'Theme already exists', 'exists': True}), 409
+
+        target_local_path.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(source_theme_path), str(target_theme_path))
+
+        logger.info('Copied theme from %s item to %s item', source_provider, provider)
+        send_pushover_notification(
+            'Theme Copied',
+            f"{target_context['title']} theme copied from {source_context['title']}",
+        )
+        item_dict, _ = _sync_cached_item_theme_state(provider, item_id)
+        return jsonify({'success': True, 'path': str(target_theme_path), 'item': item_dict})
+    except ValueError as exc:
+        return error_response('Invalid provider or item identifier', status_code=400, exc=exc)
+    except Exception as exc:
+        return error_response(f'Failed to copy theme for {provider} item {item_id}', exc=exc)
+
+
+@app.route('/api/items/<provider>/<path:item_id>/theme/upload', methods=['POST'])
+def upload_provider_theme(provider, item_id):
+    """Accept an uploaded MP3 file and save it as theme.mp3."""
+    try:
+        provider = _normalize_provider(provider)
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided in request'}), 400
+
+        context = _get_item_context(provider, item_id)
+        local_path = _validate_local_media_path(context['local_path'])
+        if not local_path:
+            return jsonify({'error': 'Cannot determine local path for item'}), 404
+
+        theme_path = _theme_file_path(local_path)
+        overwrite = request.form.get('overwrite', 'false').lower() == 'true'
+        if theme_path.exists() and theme_path.stat().st_size > 0 and not overwrite:
+            return jsonify({'error': 'Theme already exists', 'exists': True}), 409
+
+        upload_file = request.files['file']
+        valid, error = is_valid_upload(upload_file)
+        if not valid:
+            message, status_code = error
+            return jsonify({'error': message}), status_code
+
+        local_path.mkdir(parents=True, exist_ok=True)
+        upload_file.save(str(theme_path))
+
+        logger.info('Uploaded theme for %s item', provider)
+        send_pushover_notification('Theme Uploaded', f"{context['title']} theme uploaded")
+        item_dict, _ = _sync_cached_item_theme_state(provider, item_id)
+        return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
+    except ValueError as exc:
+        return error_response('Invalid provider or item identifier', status_code=400, exc=exc)
+    except Exception as exc:
+        return error_response(f'Failed to upload theme for {provider} item {item_id}', exc=exc)
+
+
+@app.route('/api/items/<provider>/<path:item_id>/theme/youtube', methods=['POST'])
+def download_provider_from_youtube(provider, item_id):
+    """Download audio from a YouTube URL and save it as theme.mp3."""
+    try:
+        provider = _normalize_provider(provider)
+        data = request.get_json(silent=True)
+        if not data or not data.get('url'):
+            return jsonify({'error': 'YouTube URL is required'}), 400
+
+        youtube_url = data['url']
+        if not is_valid_youtube_url(youtube_url):
+            return jsonify({'error': 'Only YouTube URLs are supported'}), 400
+
+        overwrite = data.get('overwrite', False)
+        context = _get_item_context(provider, item_id)
+
+        local_path = _validate_local_media_path(context['local_path'])
+        if not local_path:
+            return jsonify({'error': 'Cannot determine local path for item'}), 404
+
+        theme_path = _theme_file_path(local_path)
+        if theme_path.exists() and theme_path.stat().st_size > 0 and not overwrite:
+            return jsonify({'error': 'Theme already exists', 'exists': True}), 409
+
+        with tempfile.TemporaryDirectory(dir=YTDLP_WORKDIR) as tmpdir:
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'outtmpl': os.path.join(tmpdir, 'theme.%(ext)s'),
+                'quiet': True,
+                'no_warnings': True,
+                'noplaylist': True,
+                'match_filter': youtube_match_filter,
+                'max_filesize': MAX_UPLOAD_BYTES,
+                'js_runtimes': {'node': {}},
+                'remote_components': ['ejs:github'],
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([youtube_url])
+
+            mp3_files = list(Path(tmpdir).glob('*.mp3'))
+            if not mp3_files:
+                return jsonify({'error': 'Download failed: no MP3 file produced'}), 500
+
+            local_path.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(mp3_files[0]), str(theme_path))
+
+        logger.info('Downloaded YouTube theme for %s item', provider)
+        send_pushover_notification('Theme Downloaded', f"{context['title']} theme downloaded from YouTube")
+        item_dict, _ = _sync_cached_item_theme_state(provider, item_id)
+        return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
+    except yt_dlp.utils.DownloadError as exc:
+        msg = str(exc).removeprefix('ERROR: ').strip()
+        logger.error('Failed YouTube download for %s:%s: %s', provider, item_id, exc)
+        return jsonify({'error': msg}), 500
+    except ValueError as exc:
+        return error_response('Invalid provider or item identifier', status_code=400, exc=exc)
+    except Exception as exc:
+        return error_response(f'Failed YouTube download for {provider} item {item_id}', exc=exc)
+
+
+@app.route('/api/items/<provider>/<path:item_id>/theme', methods=['DELETE'])
+def delete_provider_theme(provider, item_id):
+    """Delete the local theme.mp3 file for a provider item."""
+    try:
+        provider = _normalize_provider(provider)
+        context = _get_item_context(provider, item_id)
+        local_path = _validate_local_media_path(context['local_path'])
+        if not local_path:
+            return jsonify({'error': 'Cannot determine local path for item'}), 404
+        theme_path = _theme_file_path(local_path)
+        if not theme_path.exists():
+            return jsonify({'error': 'No theme file to delete'}), 404
+        theme_path.unlink()
+        logger.info('Deleted theme for %s item %s', provider, item_id)
+        item_dict, _ = _sync_cached_item_theme_state(provider, item_id)
+        return jsonify({'success': True, 'item': item_dict})
+    except ValueError as exc:
+        return error_response('Invalid provider or item identifier', status_code=400, exc=exc)
+    except Exception as exc:
+        return error_response(f'Failed to delete theme for {provider} item {item_id}', exc=exc)
 
 
 # ============================================================

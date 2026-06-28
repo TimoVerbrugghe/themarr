@@ -38,7 +38,11 @@
     <!-- Sidebar -->
     <aside class="sidebar">
       <div class="sidebar-heading">Plex Libraries</div>
-      <nav id="library-nav" class="library-nav">
+      <nav id="library-nav" class="library-nav" data-provider="plex">
+        <div class="sidebar-loading">Loading libraries…</div>
+      </nav>
+      <div class="sidebar-heading">Jellyfin Libraries</div>
+      <nav id="jellyfin-library-nav" class="library-nav" data-provider="jellyfin">
         <div class="sidebar-loading">Loading libraries…</div>
       </nav>
       <div class="sidebar-divider"></div>
@@ -116,7 +120,7 @@
             </button>
             <button class="btn btn-secondary settings-action-btn" onclick="settingsRefreshLibraries()">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z"/></svg>
-              Refresh Plex Libraries
+              Refresh Libraries
             </button>
             <button class="btn btn-secondary settings-action-btn" onclick="settingsTestPushover()">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1z"/></svg>
@@ -145,6 +149,10 @@
               <tr class="settings-envtable-group"><td colspan="3">Plex</td></tr>
               <tr><td><code>PLEX_URL</code></td><td><em>required</em></td><td>Base URL of your Plex server (e.g. <code>http://192.168.1.100:32400</code>)</td></tr>
               <tr><td><code>PLEX_TOKEN</code></td><td><em>required</em></td><td>Plex authentication token. Find it via your Plex account settings.</td></tr>
+              <tr class="settings-envtable-group"><td colspan="3">Jellyfin</td></tr>
+              <tr><td><code>JELLYFIN_URL</code></td><td>—</td><td>Base URL of your Jellyfin server (e.g. <code>http://192.168.1.50:8096</code>).</td></tr>
+              <tr><td><code>JELLYFIN_API_KEY</code></td><td>—</td><td>Jellyfin API key (Dashboard → API Keys).</td></tr>
+              <tr><td><code>JELLYFIN_USER_ID</code></td><td>first user</td><td>Optional Jellyfin user ID used for library/item access. If omitted, Themarr uses the first user returned by Jellyfin.</td></tr>
               <tr class="settings-envtable-group"><td colspan="3">Media paths</td></tr>
               <tr><td><code>TV_SHOWS_HOST_PATH</code></td><td>—</td><td>Host filesystem path for TV shows, mounted into the container at the same path as your Plex container.</td></tr>
               <tr><td><code>MOVIES_HOST_PATH</code></td><td>—</td><td>Host filesystem path for movies, mounted into the container at the same path as your Plex container.</td></tr>

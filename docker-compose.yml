@@ -21,6 +21,9 @@ services:
     environment:
       PLEX_URL: ${PLEX_URL}
       PLEX_TOKEN: ${PLEX_TOKEN}
+      JELLYFIN_URL: ${JELLYFIN_URL:-}
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:-}
+      JELLYFIN_USER_ID: ${JELLYFIN_USER_ID:-}
       FLASK_DEBUG: ${FLASK_DEBUG:-false}
       DEFAULT_THEME: ${DEFAULT_THEME:-dark}
       DEFAULT_VIEW: ${DEFAULT_VIEW:-list}

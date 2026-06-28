@@ -2,9 +2,10 @@
 
 ## What this repo does
 
-Themarr manages Plex theme music (`theme.mp3`) for TV shows and movies.
-It includes a Flask-based **web UI** (`web_app.py`) with bulk download support,
-Sonarr/Radarr webhook integration, and Pushover notifications.
+Themarr manages theme music (`theme.mp3`) for Plex and Jellyfin libraries.
+It includes a Flask-based **web UI** (`web_app.py`) with download sources from
+Plex, ThemerrDB, and YouTube, plus Sonarr/Radarr webhook support and optional
+Pushover notifications.
 
 ## Local validation before finishing a task
 
