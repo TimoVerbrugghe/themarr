@@ -183,6 +183,7 @@ class TestCachedThemeStateSync:
         assert found is True
         assert updated['has_local_theme'] is True
         assert updated['has_plex_theme'] is True
+        assert updated['plex_theme_source_unverified'] is True
 
 
 class TestSettingsRuntime:
@@ -356,6 +357,7 @@ class TestLibraryItems:
         assert data[0]['title'] == 'Test Show'
         assert data[0]['type'] == 'show'
         assert data[0]['has_plex_theme'] is True
+        assert data[0]['plex_theme_source_unverified'] is False
         assert data[0]['has_local_theme'] is False
 
     def test_get_movie_items(self, client, mock_plex, tmp_path):
@@ -414,6 +416,7 @@ class TestExternalIds:
             data = web_app._serialize_jellyfin_item(jellyfin_item, 'jf-lib', theme_dirs={})
 
         assert data['has_themerrdb_theme'] is True
+        assert data['plex_theme_source_unverified'] is False
         assert data['external_ids'] == {'imdb': 'tt1234567', 'tmdb': '1234', 'tvdb': None}
 
 
@@ -435,6 +438,7 @@ class TestLibraryItemsAdditional:
         resp = client.get('/api/libraries/1/items')
         data = resp.get_json()
         assert data[0]['has_local_theme'] is True
+        assert data[0]['plex_theme_source_unverified'] is True
         assert data[0]['theme_size'] > 0
 
     def test_build_library_items_prefers_section_locations_for_theme_scan(self, mock_plex):
@@ -1007,6 +1011,8 @@ class TestThemerrDB:
         assert resp.status_code == 200
         data = resp.get_json()
         assert 'available' in data
+        assert data['source_unverified'] is True
+        assert 'local theme.mp3' in data['reason']
 
     def test_download_from_themerrdb_success(self, client, mock_plex, tmp_path):
         show_dir = tmp_path / 'Test Show (2020)'

@@ -410,6 +410,7 @@ def _serialize_jellyfin_item(item, library_id, theme_dirs=None):
         'thumb': None,
         'type': media_type,
         'has_plex_theme': False,
+        'plex_theme_source_unverified': False,
         'has_local_theme': theme_exists,
         'has_themerrdb_theme': has_themerrdb_theme,
         'theme_size': theme_size,
@@ -506,6 +507,31 @@ def _get_item_context(provider, item_id):
         'local_path': local_path,
         'has_plex_theme': False,
     }
+
+
+def _has_nonempty_theme_file(local_path):
+    """Return True when local_path/theme.mp3 exists and is non-empty."""
+    if not local_path:
+        return False
+    theme_path = _theme_file_path(local_path)
+    if not theme_path.exists():
+        return False
+    try:
+        return theme_path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _is_plex_theme_source_unverified(item, local_theme_exists=None):
+    """Return True when Plex theme may resolve to an existing local theme file."""
+    has_plex_theme = bool(getattr(item, 'theme', None))
+    if not has_plex_theme:
+        return False
+    if local_theme_exists is None:
+        local_theme_exists = _has_nonempty_theme_file(get_validated_plex_local_path(item))
+    return bool(local_theme_exists)
+
+
 def get_themerrdb_theme_for_external_ids(item_type, external_ids):
     """Resolve ThemerrDB theme metadata from external IDs for a media type."""
     themerr_item_type = 'tv_shows' if item_type == 'show' else 'movies'
@@ -684,7 +710,14 @@ def _check_plex_preview_availability(item):
         response = plex_session_get(plex, url, stream=True, timeout=15)
         response.raise_for_status()
         response.close()
-        return {'available': True}
+        source_unverified = _is_plex_theme_source_unverified(item)
+        payload = {'available': True, 'source_unverified': source_unverified}
+        if source_unverified:
+            payload['reason'] = (
+                'Plex reports a theme, but this item already has a local theme.mp3. '
+                'Plex may be streaming that local file instead of a Plex-hosted source.'
+            )
+        return payload
     except Exception as exc:
         logger.warning('Unable to stream Plex preview for item %s: %s', getattr(item, 'ratingKey', '?'), exc)
         return {'available': False, 'reason': 'Unable to stream the Plex preview right now.'}
@@ -863,6 +896,9 @@ def item_to_dict(item, theme_dirs=None, provider='plex', library_id=None):
         themerrdb_data = get_themerrdb_theme(item)
         has_themerrdb_theme = themerrdb_data is not None
 
+    has_plex_theme = bool(getattr(item, 'theme', None))
+    plex_theme_source_unverified = _is_plex_theme_source_unverified(item, theme_exists)
+
     return {
         'id': str(item.ratingKey),
         'ratingKey': item.ratingKey,
@@ -872,7 +908,8 @@ def item_to_dict(item, theme_dirs=None, provider='plex', library_id=None):
         'year': getattr(item, 'year', None),
         'thumb': item.thumb,
         'type': item.type,
-        'has_plex_theme': bool(getattr(item, 'theme', None)),
+        'has_plex_theme': has_plex_theme,
+        'plex_theme_source_unverified': plex_theme_source_unverified,
         'has_local_theme': theme_exists,
         'has_themerrdb_theme': has_themerrdb_theme,
         'theme_size': theme_size,
@@ -1188,11 +1225,16 @@ def _sync_cached_item_theme_state(provider, item_id):
                 updated = dict(cached_item)
                 updated['has_local_theme'] = theme_size > 0
                 updated['theme_size'] = theme_size
+                updated['plex_theme_source_unverified'] = False
                 if provider == 'plex':
                     try:
                         plex = get_plex()
                         item = plex.fetchItem(int(target_id))
                         updated['has_plex_theme'] = bool(getattr(item, 'theme', None))
+                        updated['plex_theme_source_unverified'] = _is_plex_theme_source_unverified(
+                            item,
+                            updated['has_local_theme'],
+                        )
                     except Exception as exc:
                         logger.warning('Unable to refresh Plex source availability for item %s: %s', target_id, exc)
                 section_items[idx] = updated
