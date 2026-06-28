@@ -50,11 +50,34 @@ let apiKey = '';
 // Auth mode reported by /api/init: 'disabled' | 'credentials' | 'misconfigured'
 let appAuthMode = 'misconfigured';
 const NOT_AUTHENTICATED_TEXT = 'Not authenticated';
+let plexConfigured = false;
 // Remove any API key previously stored in localStorage by older versions of this app.
 try { localStorage.removeItem('themarr-api-token'); } catch (_) { /* ignore */ }
 
 function makeLibraryCacheKey(provider, libraryId) {
   return `${provider}:${libraryId}`;
+}
+
+function syncPlexFeatureVisibility() {
+  const plexHeading = document.getElementById('plex-libraries-heading');
+  const plexNav = document.getElementById('library-nav');
+  const plexFilterOption = document.getElementById('filter-plex-option');
+  const bulkBtn = document.getElementById('btn-bulk-download');
+  const plexSourceBtn = document.getElementById('get-theme-btn-plex');
+  const settingsPlexTestBtn = document.getElementById('settings-test-plex-btn');
+
+  if (plexHeading) plexHeading.classList.toggle('hidden', !plexConfigured);
+  if (plexNav) plexNav.classList.toggle('hidden', !plexConfigured);
+  if (plexFilterOption) plexFilterOption.classList.toggle('hidden', !plexConfigured);
+  if (bulkBtn) bulkBtn.classList.toggle('hidden', !plexConfigured);
+  if (plexSourceBtn) plexSourceBtn.classList.toggle('hidden', !plexConfigured);
+  if (settingsPlexTestBtn) settingsPlexTestBtn.classList.toggle('hidden', !plexConfigured);
+
+  if (!plexConfigured) {
+    activeFilters.plex = false;
+    const plexCheck = document.getElementById('filter-plex-avail');
+    if (plexCheck) plexCheck.checked = false;
+  }
 }
 
 function copyApiKey() {
@@ -160,6 +183,17 @@ async function logoutSession() {
   }
 }
 
+function logoutFromSidebar(event) {
+  event.preventDefault();
+  logoutSession();
+}
+
+function syncAuthNavVisibility() {
+  const logoutNavItem = document.getElementById('logout-nav-item');
+  if (!logoutNavItem) return;
+  logoutNavItem.classList.toggle('hidden', appAuthMode === 'disabled');
+}
+
 async function loadSettingsRuntime() {
   try {
     const data = await apiGet('/api/settings/runtime');
@@ -167,24 +201,26 @@ async function loadSettingsRuntime() {
     if (data.api_key) apiKey = data.api_key;
     const keyEl = document.getElementById('runtime-api-key');
     const sourceEl = document.getElementById('runtime-api-key-source');
-    const workersEl = document.getElementById('runtime-worker-count');
-    const pageSizeEl = document.getElementById('runtime-library-page-size');
-    const pageMaxEl = document.getElementById('runtime-library-page-max');
-    const posterCacheEl = document.getElementById('runtime-poster-cache-max');
-    if (keyEl) keyEl.textContent = data.api_key ? '••••••••' + data.api_key.slice(-4) : 'Not configured';
+    if (keyEl) keyEl.value = data.api_key || 'Not configured';
     if (sourceEl) {
       sourceEl.textContent = data.api_key_configured ? 'from API_KEY env variable' : 'auto-generated at startup';
     }
-    if (workersEl) workersEl.textContent = String(data.background_worker_count);
-    if (pageSizeEl) pageSizeEl.textContent = String(data.library_page_size);
-    if (pageMaxEl) pageMaxEl.textContent = String(data.library_page_size_max);
-    if (posterCacheEl) posterCacheEl.textContent = String(data.poster_cache_max_items);
+    populateSettingsEnvValues(data.env_values || {});
   } catch (err) {
     const keyEl = document.getElementById('runtime-api-key');
     const sourceEl = document.getElementById('runtime-api-key-source');
-    if (keyEl) keyEl.textContent = NOT_AUTHENTICATED_TEXT;
+    if (keyEl) keyEl.value = NOT_AUTHENTICATED_TEXT;
     if (sourceEl) sourceEl.textContent = NOT_AUTHENTICATED_TEXT;
+    populateSettingsEnvValues({});
   }
+}
+
+function populateSettingsEnvValues(values) {
+  document.querySelectorAll('[data-env-current]').forEach((cell) => {
+    const envKey = cell.dataset.envCurrent;
+    const value = values[envKey];
+    cell.textContent = value ? value : '—';
+  });
 }
 
 async function refreshApiKey() {
@@ -323,6 +359,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   appAuthMode = initData.auth_mode || 'misconfigured';
+  syncAuthNavVisibility();
 
   if (initData.auth_required && !initData.authenticated) {
     showLoginOverlay(appAuthMode);
@@ -443,16 +480,20 @@ function setProviderConnectionStatus(providerName, status, statusElementId, stat
 }
 
 async function checkConnectionStatuses() {
-  const plexFallback = { url_configured: true, connected: false, server_name: null };
+  const plexFallback = { url_configured: false, connected: false, server_name: null };
   const jellyfinFallback = { url_configured: false, connected: false, server_name: null };
   try {
     const data = await apiGet('/api/status');
     const plexStatus = data.plex || { ...plexFallback, connected: Boolean(data.connected), server_name: data.server_name };
     const jellyfinStatus = data.jellyfin || jellyfinFallback;
+    plexConfigured = Boolean(plexStatus.url_configured);
+    syncPlexFeatureVisibility();
 
     setProviderConnectionStatus('Plex', plexStatus, 'plex-status', 'plex-status-text');
     setProviderConnectionStatus('Jellyfin', jellyfinStatus, 'jellyfin-status', 'jellyfin-status-text');
   } catch {
+    plexConfigured = false;
+    syncPlexFeatureVisibility();
     setProviderConnectionStatus('Plex', plexFallback, 'plex-status', 'plex-status-text');
     setProviderConnectionStatus('Jellyfin', jellyfinFallback, 'jellyfin-status', 'jellyfin-status-text');
     const plexEl = document.getElementById('plex-status');
@@ -747,18 +788,20 @@ function createGetThemeButton(item, view) {
   const indicators = document.createElement('span');
   indicators.className = 'get-theme-indicators';
 
-  const plexImg = document.createElement('img');
-  plexImg.src = 'https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/plex.svg';
-  plexImg.alt = '';
-  plexImg.className = 'get-theme-indicator' + (item.has_plex_theme ? '' : ' unavailable');
-  if (item.has_plex_theme) {
-    plexImg.title = item.plex_theme_source_unverified
-      ? 'Plex reports a theme, but source is unverified because a local theme.mp3 already exists'
-      : 'Plex theme available';
-  } else {
-    plexImg.title = 'No Plex theme';
+  if (plexConfigured) {
+    const plexImg = document.createElement('img');
+    plexImg.src = 'https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/plex.svg';
+    plexImg.alt = '';
+    plexImg.className = 'get-theme-indicator' + (item.has_plex_theme ? '' : ' unavailable');
+    if (item.has_plex_theme) {
+      plexImg.title = item.plex_theme_source_unverified
+        ? 'Plex reports a theme, but source is unverified because a local theme.mp3 already exists'
+        : 'Plex theme available';
+    } else {
+      plexImg.title = 'No Plex theme';
+    }
+    indicators.appendChild(plexImg);
   }
-  indicators.appendChild(plexImg);
 
   const tdbImg = document.createElement('img');
   tdbImg.src = 'https://app.lizardbyte.dev/ThemerrDB/assets/img/navbar-avatar.png';
@@ -1161,6 +1204,7 @@ function applyFilters() {
   const plexCheck = document.getElementById('filter-plex-avail');
   const tdbCheck = document.getElementById('filter-themerrdb-avail');
   activeFilters.plex = plexCheck ? plexCheck.checked : false;
+  if (!plexConfigured) activeFilters.plex = false;
   activeFilters.themerrdb = tdbCheck ? tdbCheck.checked : false;
   updateFilterButtonState();
   renderItems(currentItems);
@@ -1236,8 +1280,9 @@ function openGetThemeModal(item) {
   const tdbStatus = document.getElementById('get-theme-themerrdb-status');
 
   if (plexBtn) {
+    plexBtn.classList.toggle('hidden', !plexConfigured);
     plexBtn.disabled = !item.has_plex_theme;
-    if (plexStatus) {
+    if (plexStatus && plexConfigured) {
       if (!item.has_plex_theme) {
         plexStatus.textContent = 'Not available';
       } else if (item.plex_theme_source_unverified) {
@@ -1260,6 +1305,10 @@ function getThemeSelectSource(source) {
   const item = activeItemContext && activeItemContext.item;
   if (!item) return;
   if (source === 'plex') {
+    if (!plexConfigured) {
+      showToast('info', 'Plex source is unavailable because Plex is not configured.');
+      return;
+    }
     openDownloadModal(item);
   } else if (source === 'themerrdb') {
     openThemerrdbModal(item);
@@ -1965,6 +2014,10 @@ function showSettingsResult(ok, message) {
 }
 
 async function settingsTestPlex() {
+  if (!plexConfigured) {
+    showSettingsResult(false, '✗ Plex is not configured (set both PLEX_URL and PLEX_TOKEN).');
+    return;
+  }
   showSettingsResult(true, 'Connecting to Plex…');
   try {
     const data = await apiGet('/api/status');

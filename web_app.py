@@ -22,7 +22,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_file,
 
 from app.media_utils import (
     MAX_UPLOAD_BYTES, ALLOWED_UPLOAD_TYPES, VIDEO_FILE_EXTENSIONS,
-    _is_video_file_path, _configured_media_roots, _is_within_root,
+    _is_video_file_path,
     _validate_local_media_path, _theme_file_path, scan_local_theme_dirs,
 )
 from app.external_ids import (
@@ -35,7 +35,7 @@ from app.youtube_utils import (
     _clean_yt_dlp_error, _stream_http_response_chunks,
 )
 from app.plex_utils import (
-    get_plex, plex_session_get, get_section_base_paths,
+    get_plex, plex_is_configured, plex_session_get, get_section_base_paths,
     get_item_local_path, get_validated_plex_local_path,
 )
 from app.jellyfin_utils import (
@@ -64,18 +64,10 @@ BACKGROUND_WORKER_COUNT = BACKGROUND_WORKER_COUNT_DEFAULT
 LIBRARY_PAGE_SIZE = LIBRARY_PAGE_SIZE_DEFAULT
 LIBRARY_PAGE_SIZE_MAX_VALUE = LIBRARY_PAGE_SIZE_MAX
 app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_BYTES
-# Flask session: use env-provided key for cross-restart persistence, otherwise
-# generate one per process (sessions invalidate on restart – acceptable for a
-# home-server app where the API key also rotates on restart when auto-generated).
-app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY') or secrets.token_hex(32)
+# Browser sessions are intentionally process-local and reset on restart.
+app.config['SECRET_KEY'] = secrets.token_hex(32)
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-if not os.getenv('FLASK_SECRET_KEY'):
-    logger.warning(
-        'FLASK_SECRET_KEY is not set; a one-time session key was generated. '
-        'Browser sessions will be invalidated on every container restart. '
-        'Set FLASK_SECRET_KEY to a stable random value for persistent sessions.'
-    )
 
 # Allowed CDN hosts for yt-dlp resolved audio stream proxying (SSRF guard).
 # yt-dlp returns googlevideo.com URLs for YouTube streams under normal operation.
@@ -112,6 +104,26 @@ _poster_warmup_future = None
 _startup_warmup_started = False
 _startup_warmup_lock = threading.Lock()
 _generated_api_key = secrets.token_urlsafe(32)
+_SETTINGS_ENV_VARS = (
+    'PLEX_URL',
+    'PLEX_TOKEN',
+    'JELLYFIN_URL',
+    'JELLYFIN_API_KEY',
+    'JELLYFIN_USER_ID',
+    'DEFAULT_THEME',
+    'DEFAULT_VIEW',
+    'FLASK_DEBUG',
+    'API_KEY',
+    'AUTH_USERNAME',
+    'AUTH_PASSWORD',
+    'DISABLE_AUTH',
+    'PUSHOVER_APP_TOKEN',
+    'PUSHOVER_USER_KEY',
+    'WEBHOOK_USERNAME',
+    'WEBHOOK_PASSWORD',
+    'PLEX_RETRY_ATTEMPTS',
+    'PLEX_RETRY_DELAY',
+)
 
 
 def _log_generated_api_key_warning():
@@ -212,6 +224,11 @@ def _get_api_key():
     if configured_key:
         return configured_key, False
     return _generated_api_key, True
+
+
+def _get_settings_env_values():
+    """Return current raw environment values shown in the Settings page."""
+    return {key: (os.getenv(key) or '') for key in _SETTINGS_ENV_VARS}
 
 
 def _check_api_request_auth():
@@ -347,7 +364,8 @@ def jellyfin_session_get(jellyfin, path, **kwargs):
     headers = dict(kwargs.pop('headers', {}) or {})
     headers['X-Emby-Token'] = jellyfin['api_key']
     url = f"{jellyfin['url']}{path}"
-    return http_requests.get(url, headers=headers, timeout=JELLYFIN_TIMEOUT_SECONDS, **kwargs)
+    kwargs.setdefault('timeout', JELLYFIN_TIMEOUT_SECONDS)
+    return http_requests.get(url, headers=headers, **kwargs)
 
 
 def jellyfin_session_post(jellyfin, path, **kwargs):
@@ -355,7 +373,8 @@ def jellyfin_session_post(jellyfin, path, **kwargs):
     headers = dict(kwargs.pop('headers', {}) or {})
     headers['X-Emby-Token'] = jellyfin['api_key']
     url = f"{jellyfin['url']}{path}"
-    return http_requests.post(url, headers=headers, timeout=JELLYFIN_TIMEOUT_SECONDS, **kwargs)
+    kwargs.setdefault('timeout', JELLYFIN_TIMEOUT_SECONDS)
+    return http_requests.post(url, headers=headers, **kwargs)
 
 
 def get_jellyfin_user_id(jellyfin):
@@ -1258,18 +1277,19 @@ def _warm_library_cache():
     """Background thread: pre-load metadata, then hydrate local theme state."""
     logger.info('Library cache warmup starting…')
     sections = []
-    try:
-        plex = get_plex()
-        for section in plex.library.sections():
-            if section.type in ('show', 'movie'):
-                sections.append({
-                    'provider': 'plex',
-                    'cache_key': section.key,
-                    'section_id': section.key,
-                    'title': section.title,
-                })
-    except Exception as exc:
-        logger.warning('Library cache warmup: could not connect to Plex: %s', exc)
+    if plex_is_configured():
+        try:
+            plex = get_plex()
+            for section in plex.library.sections():
+                if section.type in ('show', 'movie'):
+                    sections.append({
+                        'provider': 'plex',
+                        'cache_key': section.key,
+                        'section_id': section.key,
+                        'title': section.title,
+                    })
+        except Exception as exc:
+            logger.warning('Library cache warmup: could not connect to Plex: %s', exc)
 
     if jellyfin_is_configured():
         try:
@@ -1492,6 +1512,7 @@ def get_settings_runtime():
         'library_page_size': LIBRARY_PAGE_SIZE,
         'library_page_size_max': LIBRARY_PAGE_SIZE_MAX_VALUE,
         'poster_cache_max_items': POSTER_CACHE_MAX_ITEMS,
+        'env_values': _get_settings_env_values(),
     })
 
 
@@ -1516,7 +1537,7 @@ def enforce_api_auth():
 @app.route('/api/status')
 def get_status():
     """Return connection status for Plex and Jellyfin."""
-    plex_url_configured = bool((os.getenv('PLEX_URL') or '').strip())
+    plex_url_configured = plex_is_configured()
     jellyfin_url_configured = bool((os.getenv('JELLYFIN_URL') or '').strip())
 
     plex_status = {
@@ -1549,9 +1570,31 @@ def get_status():
     if jellyfin_url_configured:
         try:
             jellyfin = get_jellyfin()
-            response = jellyfin_session_get(jellyfin, '/System/Info/Public', timeout=JELLYFIN_TIMEOUT_SECONDS)
-            response.raise_for_status()
-            payload = response.json() if response.content else {}
+            payload = {}
+            status_probe_succeeded = False
+
+            for status_path in ('/System/Info', '/System/Info/Public'):
+                try:
+                    response = jellyfin_session_get(jellyfin, status_path, timeout=JELLYFIN_TIMEOUT_SECONDS)
+                    response.raise_for_status()
+                    if response.content:
+                        try:
+                            payload = response.json()
+                        except ValueError:
+                            payload = {}
+                    else:
+                        payload = {}
+                    status_probe_succeeded = True
+                    break
+                except http_requests.RequestException:
+                    continue
+
+            # Fall back to the same libraries endpoint path used by normal library
+            # loading so connectivity reflects real-world usable access.
+            if not status_probe_succeeded:
+                libraries_response = jellyfin_session_get(jellyfin, '/Library/VirtualFolders', timeout=JELLYFIN_TIMEOUT_SECONDS)
+                libraries_response.raise_for_status()
+
             jellyfin_status.update({
                 'connected': True,
                 'server_name': payload.get('ServerName') or payload.get('Name'),
@@ -1581,23 +1624,24 @@ def get_libraries():
     plex_error = None
     jellyfin_error = None
 
-    try:
-        plex = get_plex()
-        sections = plex.library.sections()
-        for section in sections:
-            if section.type in ('show', 'movie'):
-                result.append({
-                    'id': section.key,
-                    # Keep `key` for frontend/API backwards compatibility.
-                    'key': section.key,
-                    'title': section.title,
-                    'type': section.type,
-                    'thumb': section.thumb,
-                    'totalSize': section.totalSize,
-                    'provider': 'plex',
-                })
-    except Exception as exc:
-        plex_error = exc
+    if plex_is_configured():
+        try:
+            plex = get_plex()
+            sections = plex.library.sections()
+            for section in sections:
+                if section.type in ('show', 'movie'):
+                    result.append({
+                        'id': section.key,
+                        # Keep `key` for frontend/API backwards compatibility.
+                        'key': section.key,
+                        'title': section.title,
+                        'type': section.type,
+                        'thumb': section.thumb,
+                        'totalSize': section.totalSize,
+                        'provider': 'plex',
+                    })
+        except Exception as exc:
+            plex_error = exc
 
     if jellyfin_is_configured():
         try:

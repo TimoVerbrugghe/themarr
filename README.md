@@ -48,7 +48,7 @@ Themarr is designed to run with the `docker-compose.yml` in this repository.
    cp .env.example .env
    ```
 
-2. Edit `.env` and set your Plex and/or Jellyfin settings plus media paths.
+2. Edit `.env` and set your Plex and/or Jellyfin settings.
 
 3. Start Themarr:
 
@@ -83,8 +83,6 @@ volumes:
 | `JELLYFIN_URL` | No* | — | Jellyfin server URL (example: `http://192.168.1.50:8096`) |
 | `JELLYFIN_API_KEY` | No* | — | Jellyfin API key |
 | `JELLYFIN_USER_ID` | No | first Jellyfin user | Optional explicit Jellyfin user ID |
-| `TV_SHOWS_HOST_PATH` | Usually | `/mnt/tv` | TV library host path mounted into container at the same path |
-| `MOVIES_HOST_PATH` | Optional | `/mnt/movies` | Movies library host path mounted into container at the same path |
 | `FLASK_DEBUG` | No | `false` | Enables Flask debug mode |
 | `DEFAULT_THEME` | No | `dark` | Default UI theme: `dark` or `light` |
 | `DEFAULT_VIEW` | No | `list` | Default library view: `list` or `grid` |
@@ -92,7 +90,6 @@ volumes:
 | `AUTH_PASSWORD` | No | — | Password for the login screen (used with `AUTH_USERNAME` when `DISABLE_AUTH=false`). |
 | `DISABLE_AUTH` | No | `false` | Set to `true` to disable all UI authentication. Only use this when a trusted reverse proxy already handles auth (see [Disable auth](#disable-auth-reverse-proxy)). |
 | `API_KEY` | No | auto-generated | API key for programmatic/webhook access. If unset, Themarr generates one at startup and logs it. |
-| `FLASK_SECRET_KEY` | No | auto-generated | Secret used to sign the browser session cookie. Set a stable value to keep sessions across container restarts. |
 | `WEBHOOK_USERNAME` | No | — | Optional Basic Auth username for Plex webhook endpoint |
 | `WEBHOOK_PASSWORD` | No | — | Optional Basic Auth password for Plex webhook endpoint |
 | `PUSHOVER_APP_TOKEN` | No | — | Pushover app token (required together with `PUSHOVER_USER_KEY`) |

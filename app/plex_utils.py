@@ -10,10 +10,17 @@ from app.media_utils import _is_video_file_path, _validate_local_media_path
 logger = logging.getLogger(__name__)
 
 
+def plex_is_configured():
+    """Return True when Plex credentials are configured."""
+    plex_url = (os.getenv('PLEX_URL') or '').strip()
+    plex_token = (os.getenv('PLEX_TOKEN') or '').strip()
+    return bool(plex_url and plex_token)
+
+
 def get_plex():
     """Get authenticated PlexServer instance from environment variables."""
-    plex_url = os.getenv('PLEX_URL')
-    plex_token = os.getenv('PLEX_TOKEN')
+    plex_url = (os.getenv('PLEX_URL') or '').strip()
+    plex_token = (os.getenv('PLEX_TOKEN') or '').strip()
     if not plex_url or not plex_token:
         raise ValueError('PLEX_URL and PLEX_TOKEN environment variables must be set')
     return PlexServer(plex_url.rstrip('/'), plex_token)

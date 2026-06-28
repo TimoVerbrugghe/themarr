@@ -80,7 +80,7 @@
   <div class="app-layout">
     <!-- Sidebar -->
     <aside class="sidebar">
-      <div class="sidebar-heading">
+      <div id="plex-libraries-heading" class="sidebar-heading">
         <img src="https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/plex.svg" alt="" class="provider-logo" aria-hidden="true">
         Plex Libraries
       </div>
@@ -99,6 +99,10 @@
         <a href="#" class="library-nav-item" id="settings-nav-item" onclick="showSettingsPage(event)">
           <span class="library-nav-icon">⚙️</span>
           <span class="library-nav-name">Settings</span>
+        </a>
+        <a href="#" class="library-nav-item hidden" id="logout-nav-item" onclick="logoutFromSidebar(event)">
+          <span class="library-nav-icon">🚪</span>
+          <span class="library-nav-name">Logout</span>
         </a>
       </nav>
     </aside>
@@ -148,7 +152,7 @@
                 <div class="filter-section">
                   <div class="filter-section-label">Source availability</div>
                   <div class="filter-check-group">
-                    <label class="filter-option">
+                    <label id="filter-plex-option" class="filter-option">
                       <input type="checkbox" id="filter-plex-avail" onchange="applyFilters()">
                       <img src="https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/plex.svg" alt="" class="filter-option-logo" aria-hidden="true">
                       Plex theme available
@@ -200,7 +204,7 @@
         <div class="settings-section">
           <h2 class="settings-section-title">Actions</h2>
           <div class="settings-actions">
-            <button class="btn btn-secondary settings-action-btn" onclick="settingsTestPlex()">
+            <button id="settings-test-plex-btn" class="btn btn-secondary settings-action-btn" onclick="settingsTestPlex()">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M11.916 0C5.333 0 0 5.333 0 11.916s5.333 11.916 11.916 11.916 11.916-5.333 11.916-11.916S18.499 0 11.916 0zm1.501 16.14L9.143 12l4.274-4.14 1.263.865-3.25 3.275 3.25 3.275z"/></svg>
               Test Plex Connectivity
             </button>
@@ -221,26 +225,17 @@
         </div>
 
         <div class="settings-section">
-          <h2 class="settings-section-title">Runtime Security &amp; Limits</h2>
-          <table class="settings-envtable">
-            <tbody>
-              <tr>
-                <td><strong>API key</strong></td>
-                <td colspan="2">
-                  <code id="runtime-api-key">Loading…</code>
-                  <button class="btn btn-secondary btn-sm" type="button" onclick="copyApiKey()">Copy</button>
-                  <div id="runtime-api-key-source">Loading…</div>
-                  <div style="margin-top:0.5rem;">
-                    <button class="btn btn-secondary btn-sm" type="button" onclick="logoutSession()">Logout</button>
-                  </div>
-                </td>
-              </tr>
-              <tr><td><strong>Background workers</strong></td><td colspan="2"><code id="runtime-worker-count">—</code></td></tr>
-              <tr><td><strong>Library page size</strong></td><td colspan="2"><code id="runtime-library-page-size">—</code></td></tr>
-              <tr><td><strong>Max library page size</strong></td><td colspan="2"><code id="runtime-library-page-max">—</code></td></tr>
-              <tr><td><strong>Poster cache max items</strong></td><td colspan="2"><code id="runtime-poster-cache-max">—</code></td></tr>
-            </tbody>
-          </table>
+          <h2 class="settings-section-title">API Key</h2>
+          <div class="settings-api-key-block">
+            <label class="settings-api-key-label" for="runtime-api-key">API Key</label>
+            <div class="settings-api-key-row">
+              <input id="runtime-api-key" class="settings-api-key-input" type="text" value="Loading…" readonly>
+              <button class="settings-api-key-copy-btn" type="button" onclick="copyApiKey()" title="Copy API key" aria-label="Copy API key">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1zm4 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h12v14z"/></svg>
+              </button>
+            </div>
+            <div id="runtime-api-key-source">Loading…</div>
+          </div>
         </div>
 
         <!-- Environment variables reference -->
@@ -251,33 +246,34 @@
               <tr>
                 <th>Variable</th>
                 <th>Default</th>
+                <th>Current</th>
                 <th>Description</th>
               </tr>
             </thead>
             <tbody>
-              <tr class="settings-envtable-group"><td colspan="3">Plex</td></tr>
-              <tr><td><code>PLEX_URL</code></td><td><em>required</em></td><td>Base URL of your Plex server (e.g. <code>http://192.168.1.100:32400</code>)</td></tr>
-              <tr><td><code>PLEX_TOKEN</code></td><td><em>required</em></td><td>Plex authentication token. Find it via your Plex account settings.</td></tr>
-              <tr class="settings-envtable-group"><td colspan="3">Jellyfin</td></tr>
-              <tr><td><code>JELLYFIN_URL</code></td><td>—</td><td>Base URL of your Jellyfin server (e.g. <code>http://192.168.1.50:8096</code>).</td></tr>
-              <tr><td><code>JELLYFIN_API_KEY</code></td><td>—</td><td>Jellyfin API key (Dashboard → API Keys).</td></tr>
-              <tr><td><code>JELLYFIN_USER_ID</code></td><td>first user</td><td>Optional Jellyfin user ID used for library/item access. If omitted, Themarr uses the first user returned by Jellyfin.</td></tr>
-              <tr class="settings-envtable-group"><td colspan="3">Media paths</td></tr>
-              <tr><td><code>TV_SHOWS_HOST_PATH</code></td><td>—</td><td>Host filesystem path for TV shows, mounted into the container at the same path as your Plex container.</td></tr>
-              <tr><td><code>MOVIES_HOST_PATH</code></td><td>—</td><td>Host filesystem path for movies, mounted into the container at the same path as your Plex container.</td></tr>
-              <tr class="settings-envtable-group"><td colspan="3">Web UI</td></tr>
-              <tr><td><code>DEFAULT_THEME</code></td><td><code>dark</code></td><td>Initial colour theme (<code>dark</code> or <code>light</code>). Users can override this in-browser.</td></tr>
-              <tr><td><code>DEFAULT_VIEW</code></td><td><code>list</code></td><td>Initial library view (<code>list</code> or <code>grid</code>). Users can override this in-browser via the view-toggle buttons.</td></tr>
-              <tr><td><code>FLASK_DEBUG</code></td><td><code>false</code></td><td>Enable Flask debug mode. Do not use in production.</td></tr>
-              <tr><td><code>API_KEY</code></td><td><code>auto-generated</code></td><td>API key used for all mutating API routes. If unset, Themarr generates a startup API key and shows it above.</td></tr>
-              <tr class="settings-envtable-group"><td colspan="3">Notifications (optional)</td></tr>
-              <tr><td><code>PUSHOVER_APP_TOKEN</code></td><td>—</td><td>Pushover application token. Leave blank to disable push notifications.</td></tr>
-              <tr><td><code>PUSHOVER_USER_KEY</code></td><td>—</td><td>Pushover user/group key. Leave blank to disable push notifications.</td></tr>
-              <tr class="settings-envtable-group"><td colspan="3">Webhooks (optional)</td></tr>
-              <tr><td><code>WEBHOOK_USERNAME</code></td><td>—</td><td>Basic-auth username for the Plex webhook endpoint.</td></tr>
-              <tr><td><code>WEBHOOK_PASSWORD</code></td><td>—</td><td>Basic-auth password for the Plex webhook endpoint.</td></tr>
-              <tr><td><code>PLEX_RETRY_ATTEMPTS</code></td><td><code>10</code></td><td>Max number of Plex lookup attempts after a webhook event.</td></tr>
-              <tr><td><code>PLEX_RETRY_DELAY</code></td><td><code>30</code></td><td>Seconds between each Plex lookup attempt (linearly increasing).</td></tr>
+              <tr class="settings-envtable-group"><td colspan="4">Plex</td></tr>
+              <tr><td><code>PLEX_URL</code></td><td>—</td><td data-env-current="PLEX_URL">Loading…</td><td>Plex server URL (optional when using Jellyfin-only setup).</td></tr>
+              <tr><td><code>PLEX_TOKEN</code></td><td>—</td><td data-env-current="PLEX_TOKEN">Loading…</td><td>Plex authentication token (optional when using Jellyfin-only setup).</td></tr>
+              <tr class="settings-envtable-group"><td colspan="4">Jellyfin</td></tr>
+              <tr><td><code>JELLYFIN_URL</code></td><td>—</td><td data-env-current="JELLYFIN_URL">Loading…</td><td>Base URL of your Jellyfin server (e.g. <code>http://192.168.1.50:8096</code>).</td></tr>
+              <tr><td><code>JELLYFIN_API_KEY</code></td><td>—</td><td data-env-current="JELLYFIN_API_KEY">Loading…</td><td>Jellyfin API key (Dashboard → API Keys).</td></tr>
+              <tr><td><code>JELLYFIN_USER_ID</code></td><td>first user</td><td data-env-current="JELLYFIN_USER_ID">Loading…</td><td>Optional Jellyfin user ID used for library/item access. If omitted, Themarr uses the first user returned by Jellyfin.</td></tr>
+              <tr class="settings-envtable-group"><td colspan="4">Web UI</td></tr>
+              <tr><td><code>DEFAULT_THEME</code></td><td><code>dark</code></td><td data-env-current="DEFAULT_THEME">Loading…</td><td>Initial colour theme (<code>dark</code> or <code>light</code>). Users can override this in-browser.</td></tr>
+              <tr><td><code>DEFAULT_VIEW</code></td><td><code>list</code></td><td data-env-current="DEFAULT_VIEW">Loading…</td><td>Initial library view (<code>list</code> or <code>grid</code>). Users can override this in-browser via the view-toggle buttons.</td></tr>
+              <tr><td><code>FLASK_DEBUG</code></td><td><code>false</code></td><td data-env-current="FLASK_DEBUG">Loading…</td><td>Enable Flask debug mode. Do not use in production.</td></tr>
+              <tr><td><code>AUTH_USERNAME</code></td><td>—</td><td data-env-current="AUTH_USERNAME">Loading…</td><td>Username for credentials-based UI authentication.</td></tr>
+              <tr><td><code>AUTH_PASSWORD</code></td><td>—</td><td data-env-current="AUTH_PASSWORD">Loading…</td><td>Password for credentials-based UI authentication.</td></tr>
+              <tr><td><code>DISABLE_AUTH</code></td><td><code>false</code></td><td data-env-current="DISABLE_AUTH">Loading…</td><td>Set to <code>true</code> to bypass UI login (only behind trusted reverse proxy).</td></tr>
+              <tr><td><code>API_KEY</code></td><td><code>auto-generated</code></td><td data-env-current="API_KEY">Loading…</td><td>API key used for mutating API routes. If unset, Themarr generates one at startup and shows it above.</td></tr>
+              <tr class="settings-envtable-group"><td colspan="4">Notifications (optional)</td></tr>
+              <tr><td><code>PUSHOVER_APP_TOKEN</code></td><td>—</td><td data-env-current="PUSHOVER_APP_TOKEN">Loading…</td><td>Pushover application token. Leave blank to disable push notifications.</td></tr>
+              <tr><td><code>PUSHOVER_USER_KEY</code></td><td>—</td><td data-env-current="PUSHOVER_USER_KEY">Loading…</td><td>Pushover user/group key. Leave blank to disable push notifications.</td></tr>
+              <tr class="settings-envtable-group"><td colspan="4">Webhooks (optional)</td></tr>
+              <tr><td><code>WEBHOOK_USERNAME</code></td><td>—</td><td data-env-current="WEBHOOK_USERNAME">Loading…</td><td>Basic-auth username for the Plex webhook endpoint.</td></tr>
+              <tr><td><code>WEBHOOK_PASSWORD</code></td><td>—</td><td data-env-current="WEBHOOK_PASSWORD">Loading…</td><td>Basic-auth password for the Plex webhook endpoint.</td></tr>
+              <tr><td><code>PLEX_RETRY_ATTEMPTS</code></td><td><code>10</code></td><td data-env-current="PLEX_RETRY_ATTEMPTS">Loading…</td><td>Max number of Plex lookup attempts after a webhook event.</td></tr>
+              <tr><td><code>PLEX_RETRY_DELAY</code></td><td><code>30</code></td><td data-env-current="PLEX_RETRY_DELAY">Loading…</td><td>Seconds between each Plex lookup attempt (linearly increasing).</td></tr>
             </tbody>
           </table>
         </div>

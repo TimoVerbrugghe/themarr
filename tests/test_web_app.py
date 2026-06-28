@@ -38,12 +38,13 @@ def client(app):
 @pytest.fixture
 def mock_plex():
     """Mock PlexServer."""
-    with patch('web_app.get_plex') as mock_get_plex:
-        plex = MagicMock()
-        plex.friendlyName = 'Test Plex Server'
-        plex.version = '1.0.0'
-        mock_get_plex.return_value = plex
-        yield plex
+    with patch('web_app.plex_is_configured', return_value=True):
+        with patch('web_app.get_plex') as mock_get_plex:
+            plex = MagicMock()
+            plex.friendlyName = 'Test Plex Server'
+            plex.version = '1.0.0'
+            mock_get_plex.return_value = plex
+            yield plex
 
 
 def make_mock_show(rating_key=1, title='Test Show', year=2020, has_theme=True, location=None):
@@ -113,6 +114,14 @@ class TestStatus:
         assert data['plex']['url_configured'] is False
         assert data['jellyfin']['url_configured'] is False
 
+    def test_status_hides_plex_when_token_missing(self, client):
+        with patch.dict(os.environ, {'PLEX_URL': 'http://plex.local', 'PLEX_TOKEN': ''}, clear=False):
+            resp = client.get('/api/status')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['plex']['url_configured'] is False
+        assert data['plex']['connected'] is False
+
     def test_status_includes_jellyfin_connected(self, client):
         mock_response = MagicMock()
         mock_response.content = b'{}'
@@ -126,6 +135,47 @@ class TestStatus:
         assert data['jellyfin']['url_configured'] is True
         assert data['jellyfin']['connected'] is True
         assert data['jellyfin']['server_name'] == 'Test Jellyfin'
+
+    def test_status_marks_jellyfin_connected_when_system_info_endpoints_fail_but_libraries_work(self, client):
+        import web_app
+
+        mock_library_response = MagicMock()
+        mock_library_response.raise_for_status.return_value = None
+        mock_library_response.content = b'[]'
+        mock_library_response.json.return_value = []
+
+        with patch.dict(os.environ, {'JELLYFIN_URL': 'http://jellyfin.local', 'JELLYFIN_API_KEY': 'j-key'}, clear=False):
+            with patch(
+                'web_app.jellyfin_session_get',
+                side_effect=[
+                    web_app.http_requests.RequestException('System info unavailable'),
+                    web_app.http_requests.RequestException('Public system info unavailable'),
+                    mock_library_response,
+                ],
+            ):
+                resp = client.get('/api/status')
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['jellyfin']['url_configured'] is True
+        assert data['jellyfin']['connected'] is True
+        assert data['jellyfin']['server_name'] is None
+
+    def test_status_handles_non_json_system_info_payload_and_still_marks_jellyfin_connected(self, client):
+        mock_response = MagicMock()
+        mock_response.content = b'<!doctype html>'
+        mock_response.json.side_effect = ValueError('Not JSON')
+        mock_response.raise_for_status.return_value = None
+
+        with patch.dict(os.environ, {'JELLYFIN_URL': 'http://jellyfin.local', 'JELLYFIN_API_KEY': 'j-key'}, clear=False):
+            with patch('web_app.jellyfin_session_get', return_value=mock_response):
+                resp = client.get('/api/status')
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['jellyfin']['url_configured'] is True
+        assert data['jellyfin']['connected'] is True
+        assert data['jellyfin']['server_name'] is None
 
 
 class TestHealth:
@@ -226,6 +276,17 @@ class TestSettingsRuntime:
         assert data['api_key_configured'] is True
         assert data['api_key_generated'] is False
 
+    def test_runtime_settings_includes_current_environment_values(self, app):
+        with patch.dict(os.environ, {'API_KEY': 'configured-key', 'DEFAULT_THEME': 'light', 'DISABLE_AUTH': 'false'}, clear=False):
+            with app.test_client() as c:
+                resp = c.get('/api/settings/runtime', headers={'X-Themarr-Api-Key': 'configured-key'})
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        env_values = data['env_values']
+        assert env_values['DEFAULT_THEME'] == 'light'
+        assert env_values['DISABLE_AUTH'] == 'false'
+
     def test_runtime_settings_accessible_via_session(self, app):
         import web_app
         with patch.dict(os.environ, {'API_KEY': 'sess-key', 'AUTH_USERNAME': 'admin', 'AUTH_PASSWORD': 'secret'}):
@@ -309,10 +370,11 @@ class TestLibraries:
         assert all('id' in d and 'key' in d and d['id'] == d['key'] for d in data)
 
     def test_get_libraries_error(self, client):
-        with patch('web_app.get_plex', side_effect=Exception('Plex error')):
-            resp = client.get('/api/libraries')
-            assert resp.status_code == 500
-            assert resp.get_json()['error'] == 'Failed to get libraries'
+        with patch('web_app.plex_is_configured', return_value=True):
+            with patch('web_app.get_plex', side_effect=Exception('Plex error')):
+                resp = client.get('/api/libraries')
+                assert resp.status_code == 500
+                assert resp.get_json()['error'] == 'Failed to get libraries'
 
     def test_get_libraries_includes_jellyfin(self, client, mock_plex):
         tv_section = MagicMock()
@@ -340,6 +402,28 @@ class TestLibraries:
         data = resp.get_json()
         assert any(entry['provider'] == 'plex' for entry in data)
         assert any(entry['provider'] == 'jellyfin' for entry in data)
+
+    def test_get_libraries_jellyfin_only_does_not_require_plex(self, client):
+        jellyfin_library = {
+            'id': 'jf-lib',
+            'key': 'jf-lib',
+            'title': 'Jellyfin Shows',
+            'type': 'show',
+            'thumb': None,
+            'totalSize': 7,
+            'provider': 'jellyfin',
+        }
+
+        with patch.dict(os.environ, {'PLEX_URL': '', 'PLEX_TOKEN': ''}, clear=False):
+            with patch('web_app.get_plex', side_effect=AssertionError('get_plex should not be called')):
+                with patch('web_app.jellyfin_is_configured', return_value=True), \
+                     patch('web_app._get_jellyfin_libraries', return_value=[jellyfin_library]):
+                    resp = client.get('/api/libraries')
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data) == 1
+        assert data[0]['provider'] == 'jellyfin'
 
 
 class TestLibraryItems:
@@ -541,41 +625,23 @@ class TestGetJellyfinItemLocalPath:
 
 
 class TestLocalPathValidation:
-    def test_validate_local_media_path_rejects_traversal(self, monkeypatch, tmp_path):
+    def test_validate_local_media_path_rejects_traversal(self):
         from web_app import _validate_local_media_path
-
-        safe_root = tmp_path / 'tv'
-        safe_root.mkdir()
-        monkeypatch.setenv('TV_SHOWS_HOST_PATH', str(safe_root))
-        monkeypatch.delenv('MOVIES_HOST_PATH', raising=False)
 
         with pytest.raises(ValueError, match='Invalid local media path'):
             _validate_local_media_path('../../etc/passwd')
 
-    def test_validate_local_media_path_rejects_outside_media_roots(self, monkeypatch, tmp_path):
+    def test_validate_local_media_path_allows_absolute_paths_without_env_roots(self, tmp_path):
         from web_app import _validate_local_media_path
 
-        safe_root = tmp_path / 'tv'
-        safe_root.mkdir()
-        outside_root = tmp_path / 'other'
-        outside_root.mkdir()
-        monkeypatch.setenv('TV_SHOWS_HOST_PATH', str(safe_root))
-        monkeypatch.delenv('MOVIES_HOST_PATH', raising=False)
+        validated = _validate_local_media_path(tmp_path / 'other' / 'show')
+        assert str(validated).endswith('/other/show')
 
-        with pytest.raises(ValueError, match='outside configured media roots'):
-            _validate_local_media_path(outside_root / 'show')
-
-    def test_provider_theme_rejects_path_outside_media_roots(self, client, monkeypatch, tmp_path):
-        safe_root = tmp_path / 'tv'
-        safe_root.mkdir()
-        monkeypatch.setenv('TV_SHOWS_HOST_PATH', str(safe_root))
-        monkeypatch.delenv('MOVIES_HOST_PATH', raising=False)
-
+    def test_provider_theme_accepts_absolute_paths_without_env_roots(self, client):
         with patch('web_app._get_item_context', return_value={'local_path': Path('/etc')}):
             resp = client.get('/api/items/jellyfin/abc/theme')
 
-        assert resp.status_code == 400
-        assert resp.get_json()['error'] == 'Invalid provider or item identifier'
+        assert resp.status_code == 404
 
 
 class TestThemeDownload:

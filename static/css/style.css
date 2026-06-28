@@ -1394,6 +1394,54 @@ a:hover { color: var(--accent-hover); }
 .settings-action-result.result-ok  { border-color: var(--success); color: var(--success); background: color-mix(in srgb, var(--success) 6%, var(--bg-form)); }
 .settings-action-result.result-err { border-color: var(--danger);  color: var(--danger);  background: color-mix(in srgb, var(--danger) 6%, var(--bg-form)); }
 
+.settings-api-key-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-api-key-label {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.settings-api-key-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.settings-api-key-input {
+  flex: 1;
+  min-height: 46px;
+  padding: 0 14px;
+  font-size: 18px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px 0 0 6px;
+  outline: none;
+}
+
+.settings-api-key-copy-btn {
+  width: 56px;
+  min-width: 56px;
+  border: 1px solid var(--border-strong);
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+  background: var(--bg-form);
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.settings-api-key-copy-btn:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-form));
+}
+
 /* Environment variable table */
 .settings-envtable {
   width: 100%;
