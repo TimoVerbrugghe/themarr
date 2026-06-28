@@ -15,11 +15,20 @@ permissions: {}
 
 jobs:
   analyze:
-    name: Analyze Python
+    name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: write  # Required to upload SARIF results
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+            category: codeql-python
+          - language: javascript-typescript
+            category: codeql-javascript
 
     steps:
       - name: Checkout repository
@@ -30,13 +39,13 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
         with:
-          languages: python
+          languages: ${{ matrix.language }}
           # Use the security-extended query suite to catch more vulnerability classes
           # (covers OWASP Top 10 + additional CWEs beyond the default suite)
           queries: security-extended
 
-      # CodeQL auto-builds Python projects; explicit build step is not required.
+      # CodeQL auto-builds Python/JS projects; explicit build step is not required.
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
         with:
-          category: codeql-python
+          category: ${{ matrix.category }}

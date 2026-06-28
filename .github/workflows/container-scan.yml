@@ -1,0 +1,59 @@
+name: Container vulnerability scan
+
+# Runs after docker-publish.yml pushes a new image to GHCR,
+# and also on a weekly schedule to catch newly-disclosed CVEs
+# against already-published images.
+on:
+  workflow_run:
+    workflows: ["Build and publish Docker image"]
+    types: [completed]
+    branches: [main]
+  schedule:
+    # Every Tuesday at 08:00 UTC — offset from Dependabot (Monday) so fixes
+    # can be merged before the weekly scan alarm fires.
+    - cron: '0 8 * * 2'
+
+permissions: {}
+
+jobs:
+  scan:
+    name: Scan published image
+    # Only run if the triggering workflow succeeded (or if it's a scheduled run)
+    if: >
+      github.event_name == 'schedule' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write    # Upload SARIF to Security tab
+      packages: read            # Pull image from GHCR
+
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}:main
+
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull image
+        run: docker pull "$IMAGE"
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH
+          # Do NOT use exit-code here; scanning published images is advisory.
+          # The build-time scan (in docker-publish.yml) is the enforcement gate.
+
+      - name: Upload Trivy SARIF to Security tab
+        uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-container

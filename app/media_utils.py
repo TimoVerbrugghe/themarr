@@ -6,7 +6,10 @@ from werkzeug.utils import safe_join
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
-ALLOWED_UPLOAD_TYPES = {'audio/mpeg', 'audio/mp3', 'application/octet-stream'}
+ALLOWED_UPLOAD_TYPES = {'audio/mpeg', 'audio/mp3'}
+
+# MP3 magic byte prefixes: ID3 tag header or MPEG sync-word variants.
+_MP3_MAGIC_PREFIXES = (b'ID3', b'\xff\xfb', b'\xff\xf3', b'\xff\xf2', b'\xff\xe0')
 
 VIDEO_FILE_EXTENSIONS = {
     '.3gp', '.asf', '.avi', '.divx', '.flv', '.iso', '.m2ts', '.m4v', '.mkv',
@@ -19,8 +22,25 @@ def _is_video_file_path(path):
     return path.suffix.lower() in VIDEO_FILE_EXTENSIONS
 
 
+def _get_allowed_media_roots() -> list:
+    """Return the configured media root boundaries from environment variables."""
+    roots = []
+    for env_var in ('TV_SHOWS_HOST_PATH', 'MOVIES_HOST_PATH'):
+        val = (os.getenv(env_var) or '').strip()
+        if val:
+            try:
+                roots.append(Path(val).resolve())
+            except Exception:
+                pass
+    return roots
+
+
 def _validate_local_media_path(local_path):
-    """Normalize and validate local media path for safe filesystem usage."""
+    """Normalize and validate local media path for safe filesystem usage.
+
+    When TV_SHOWS_HOST_PATH or MOVIES_HOST_PATH are configured, the resolved
+    path must fall within one of those roots (path-boundary enforcement).
+    """
     if local_path is None:
         return None
 
@@ -34,7 +54,30 @@ def _validate_local_media_path(local_path):
         raise ValueError('Invalid local media path')
 
     normalized_path = Path(normalized)
+
+    allowed_roots = _get_allowed_media_roots()
+    if allowed_roots:
+        normalized_resolved = normalized_path.resolve() if normalized_path.exists() else normalized_path
+        if not any(
+            str(normalized_resolved).startswith(str(root) + os.sep)
+            or normalized_resolved == root
+            for root in allowed_roots
+        ):
+            raise ValueError(
+                f'Path {normalized_path} is outside the allowed media directories'
+            )
+
     return normalized_path
+
+
+def _is_valid_mp3_magic(file_obj) -> bool:
+    """Return True when the first bytes of *file_obj* match an MP3 magic signature."""
+    try:
+        header = file_obj.read(3)
+        file_obj.seek(0)
+        return any(header.startswith(prefix) for prefix in _MP3_MAGIC_PREFIXES)
+    except Exception:
+        return False
 
 
 def _theme_file_path(local_path):

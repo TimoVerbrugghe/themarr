@@ -18,7 +18,7 @@ WORKDIR /app
 # Create non-root user for running the application
 RUN groupadd -r themarr && useradd -r -g themarr themarr
 
-# Install Python dependencies
+# Install Python dependencies (production only — test deps excluded)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

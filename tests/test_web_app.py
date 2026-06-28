@@ -1809,3 +1809,241 @@ class TestDisableAuth:
                 resp = c.post('/api/auth/login', json={})
         assert resp.status_code == 200
         assert resp.get_json()['auth_mode'] == 'disabled'
+
+
+# =============================================================================
+# Regression tests for confirmed bugs (multi-agent audit)
+# =============================================================================
+
+class TestYoutubeSearchOpts:
+    """BUG-001 / BUG-008 — yt-dlp option hygiene in youtube_search."""
+
+    def test_youtube_search_opts_do_not_include_remote_components(self):
+        """remote_components must never appear in youtube_search ydl_opts (supply-chain RCE)."""
+        import web_app
+        # Capture the ydl_opts dict built inside youtube_search by intercepting YoutubeDL.__init__
+        captured = {}
+        original_init = None
+
+        class CapturingYDL:
+            def __init__(self, opts):
+                captured['opts'] = dict(opts)
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+            def extract_info(self, *a, **kw):
+                return {'entries': []}
+
+        with patch('web_app.yt_dlp.YoutubeDL', CapturingYDL):
+            with patch.dict(os.environ, {'DISABLE_AUTH': 'true'}):
+                with web_app.app.test_client() as c:
+                    c.get('/api/youtube/search?q=test')
+
+        assert 'remote_components' not in captured.get('opts', {}), (
+            "remote_components must not be passed to yt-dlp (supply-chain RCE risk)"
+        )
+        assert 'js_runtimes' not in captured.get('opts', {}), (
+            "js_runtimes must not be passed to yt-dlp"
+        )
+
+    def test_youtube_search_opts_include_socket_timeout(self):
+        """youtube_search ydl_opts should include socket_timeout for reliability."""
+        import web_app
+        captured = {}
+
+        class CapturingYDL:
+            def __init__(self, opts):
+                captured['opts'] = dict(opts)
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+            def extract_info(self, *a, **kw):
+                return {'entries': []}
+
+        with patch('web_app.yt_dlp.YoutubeDL', CapturingYDL):
+            with patch.dict(os.environ, {'DISABLE_AUTH': 'true'}):
+                with web_app.app.test_client() as c:
+                    c.get('/api/youtube/search?q=test')
+
+        assert 'socket_timeout' in captured.get('opts', {}), (
+            "socket_timeout should be set to bound yt-dlp search requests"
+        )
+
+    def test_youtube_search_query_length_cap(self):
+        """Queries longer than 200 chars should be rejected with 400."""
+        import web_app
+        with patch.dict(os.environ, {'DISABLE_AUTH': 'true'}):
+            with web_app.app.test_client() as c:
+                resp = c.get(f'/api/youtube/search?q={"a" * 201}')
+        assert resp.status_code == 400
+
+
+class TestWebhookPartialAuth:
+    """BUG-005 — Partial webhook Basic Auth should return 503, not silently accept."""
+
+    def test_partial_auth_only_username_returns_503(self, app):
+        with patch.dict(os.environ, {
+            'WEBHOOK_USERNAME': 'user', 'WEBHOOK_PASSWORD': '',
+            'DISABLE_AUTH': 'true',
+        }):
+            with app.test_client() as c:
+                resp = c.post('/api/webhooks/plex',
+                              data='{}', content_type='application/json')
+        assert resp.status_code == 503
+
+    def test_partial_auth_only_password_returns_503(self, app):
+        with patch.dict(os.environ, {
+            'WEBHOOK_USERNAME': '', 'WEBHOOK_PASSWORD': 'secret',
+            'DISABLE_AUTH': 'true',
+        }):
+            with app.test_client() as c:
+                resp = c.post('/api/webhooks/plex',
+                              data='{}', content_type='application/json')
+        assert resp.status_code == 503
+
+    def test_no_auth_config_accepts_request(self, app):
+        """When neither credential is set, webhook auth is intentionally disabled."""
+        with patch.dict(os.environ, {
+            'WEBHOOK_USERNAME': '', 'WEBHOOK_PASSWORD': '',
+            'DISABLE_AUTH': 'true',
+        }):
+            with app.test_client() as c:
+                resp = c.post('/api/webhooks/plex',
+                              data='{}', content_type='application/json')
+        # Request gets past auth check (may fail for other reasons, but not 503)
+        assert resp.status_code != 503
+
+
+class TestGetEndpointsRequireAuth:
+    """FINDING-02 — All GET /api/ endpoints except the public allowlist require auth."""
+
+    def test_get_libraries_requires_auth(self, app):
+        with patch.dict(os.environ, {'DISABLE_AUTH': '', 'AUTH_USERNAME': 'u', 'AUTH_PASSWORD': 'p'}):
+            with app.test_client() as c:
+                resp = c.get('/api/libraries')
+        assert resp.status_code == 401
+
+    def test_get_status_requires_auth(self, app):
+        with patch.dict(os.environ, {'DISABLE_AUTH': '', 'AUTH_USERNAME': 'u', 'AUTH_PASSWORD': 'p'}):
+            with app.test_client() as c:
+                resp = c.get('/api/status')
+        assert resp.status_code == 401
+
+    def test_get_youtube_search_requires_auth(self, app):
+        with patch.dict(os.environ, {'DISABLE_AUTH': '', 'AUTH_USERNAME': 'u', 'AUTH_PASSWORD': 'p'}):
+            with app.test_client() as c:
+                resp = c.get('/api/youtube/search?q=test')
+        assert resp.status_code == 401
+
+    def test_cache_status_is_public(self, app):
+        """cache/status must remain unauthenticated for the startup overlay."""
+        with patch.dict(os.environ, {'DISABLE_AUTH': '', 'AUTH_USERNAME': 'u', 'AUTH_PASSWORD': 'p'}):
+            with app.test_client() as c:
+                resp = c.get('/api/cache/status')
+        assert resp.status_code == 200
+
+    def test_init_is_public(self, app):
+        with patch.dict(os.environ, {'DISABLE_AUTH': '', 'AUTH_USERNAME': 'u', 'AUTH_PASSWORD': 'p'}):
+            with app.test_client() as c:
+                resp = c.get('/api/init')
+        assert resp.status_code == 200
+
+
+class TestSecurityHeaders:
+    """FINDING-09 — Security response headers should be present on all responses."""
+
+    def test_security_headers_on_api_response(self, app):
+        with patch.dict(os.environ, {'DISABLE_AUTH': 'true'}):
+            with app.test_client() as c:
+                resp = c.get('/api/init')
+        assert resp.headers.get('X-Content-Type-Options') == 'nosniff'
+        assert resp.headers.get('X-Frame-Options') == 'DENY'
+        assert 'Referrer-Policy' in resp.headers
+        assert 'Content-Security-Policy' in resp.headers
+
+    def test_security_headers_on_html_response(self, app):
+        with app.test_client() as c:
+            resp = c.get('/')
+        assert resp.headers.get('X-Content-Type-Options') == 'nosniff'
+        assert resp.headers.get('X-Frame-Options') == 'DENY'
+
+
+class TestMp3MagicByte:
+    """FINDING-06 — Upload validation must check MP3 magic bytes."""
+
+    def test_valid_id3_header_accepted(self, app):
+        from app.media_utils import _is_valid_mp3_magic
+        f = io.BytesIO(b'ID3\x03\x00\x00\x00\x00\x00\x00' + b'\x00' * 100)
+        assert _is_valid_mp3_magic(f) is True
+        assert f.read(3) == b'ID3'  # stream rewound
+
+    def test_valid_sync_word_accepted(self, app):
+        from app.media_utils import _is_valid_mp3_magic
+        f = io.BytesIO(b'\xff\xfb\x90\x00' + b'\x00' * 100)
+        assert _is_valid_mp3_magic(f) is True
+
+    def test_invalid_bytes_rejected(self, app):
+        from app.media_utils import _is_valid_mp3_magic
+        f = io.BytesIO(b'PK\x03\x04' + b'\x00' * 100)  # ZIP magic
+        assert _is_valid_mp3_magic(f) is False
+
+    def test_octet_stream_not_in_allowed_types(self):
+        from app.media_utils import ALLOWED_UPLOAD_TYPES
+        assert 'application/octet-stream' not in ALLOWED_UPLOAD_TYPES
+
+
+class TestThemerrDbCacheKey:
+    """BUG-002 — ThemerrDB cache key must include item_type to prevent cross-type collisions."""
+
+    def test_cache_keys_differ_by_item_type(self):
+        import web_app
+        key_movie = web_app._get_themerrdb_cache_key('tt1234567', 'movies')
+        key_show = web_app._get_themerrdb_cache_key('tt1234567', 'tv_shows')
+        assert key_movie != key_show, (
+            "Same external ID with different item types must produce different cache keys"
+        )
+
+    def test_cache_key_without_type_is_distinct(self):
+        import web_app
+        key_typed = web_app._get_themerrdb_cache_key('tt1234567', 'movies')
+        key_untyped = web_app._get_themerrdb_cache_key('tt1234567')
+        assert key_typed != key_untyped
+
+
+class TestPathBoundaryEnforcement:
+    """FINDING-04 — _validate_local_media_path must enforce TV/Movies root boundaries."""
+
+    def test_path_within_tv_root_accepted(self, tmp_path):
+        tv_dir = tmp_path / 'tv'
+        tv_dir.mkdir()
+        show_dir = tv_dir / 'MyShow'
+        show_dir.mkdir()
+        with patch.dict(os.environ, {'TV_SHOWS_HOST_PATH': str(tv_dir), 'MOVIES_HOST_PATH': ''}):
+            from importlib import reload
+            import app.media_utils as mu
+            reload(mu)
+            result = mu._validate_local_media_path(show_dir)
+        assert result is not None
+
+    def test_path_outside_roots_rejected(self, tmp_path):
+        tv_dir = tmp_path / 'tv'
+        tv_dir.mkdir()
+        outside_dir = tmp_path / 'secrets'
+        outside_dir.mkdir()
+        with patch.dict(os.environ, {'TV_SHOWS_HOST_PATH': str(tv_dir), 'MOVIES_HOST_PATH': ''}):
+            from importlib import reload
+            import app.media_utils as mu
+            reload(mu)
+            with pytest.raises(ValueError, match='outside the allowed media directories'):
+                mu._validate_local_media_path(outside_dir)
+
+    def test_no_roots_configured_accepts_any_path(self, tmp_path):
+        """When neither root is configured, boundary check is skipped."""
+        with patch.dict(os.environ, {'TV_SHOWS_HOST_PATH': '', 'MOVIES_HOST_PATH': ''}):
+            from importlib import reload
+            import app.media_utils as mu
+            reload(mu)
+            result = mu._validate_local_media_path('/some/path')
+        assert result is not None

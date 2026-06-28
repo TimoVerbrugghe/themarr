@@ -1446,7 +1446,7 @@ async function openThemerrdbModal(item) {
     `;
     document.getElementById('btn-confirm-themerrdb').disabled = false;
   } catch (err) {
-    previewContainer.innerHTML = `<p class="error">Failed to load theme preview: ${err}</p>`;
+    previewContainer.innerHTML = `<p class="error">Failed to load theme preview: ${escHtml(String(err))}</p>`;
     document.getElementById('btn-confirm-themerrdb').disabled = true;
     showToast('error', `Failed to load ThemerrDB preview: ${err}`);
   }
@@ -1714,7 +1714,7 @@ async function doYoutubeSearch() {
     const resp = await fetch(`/api/youtube/search?q=${encodeURIComponent(query)}&limit=5`);
     const data = await resp.json();
     if (!resp.ok || data.error) {
-      resultsEl.innerHTML = `<div class="yt-search-empty">Search failed: ${data.error || 'Unknown error'}</div>`;
+      resultsEl.innerHTML = `<div class="yt-search-empty">Search failed: ${escHtml(data.error || 'Unknown error')}</div>`;
       return;
     }
     if (!data.results || data.results.length === 0) {
@@ -1723,7 +1723,7 @@ async function doYoutubeSearch() {
     }
     _renderYoutubeResults(data.results, resultsEl);
   } catch (err) {
-    resultsEl.innerHTML = `<div class="yt-search-empty">Search failed: ${err.message}</div>`;
+    resultsEl.innerHTML = `<div class="yt-search-empty">Search failed: ${escHtml(err.message || String(err))}</div>`;
   }
 }
 

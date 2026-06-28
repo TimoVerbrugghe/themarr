@@ -22,7 +22,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_file,
 
 from app.media_utils import (
     MAX_UPLOAD_BYTES, ALLOWED_UPLOAD_TYPES, VIDEO_FILE_EXTENSIONS,
-    _is_video_file_path,
+    _is_video_file_path, _is_valid_mp3_magic,
     _validate_local_media_path, _theme_file_path, scan_local_theme_dirs,
 )
 from app.external_ids import (
@@ -65,9 +65,10 @@ LIBRARY_PAGE_SIZE = LIBRARY_PAGE_SIZE_DEFAULT
 LIBRARY_PAGE_SIZE_MAX_VALUE = LIBRARY_PAGE_SIZE_MAX
 app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_BYTES
 # Browser sessions are intentionally process-local and reset on restart.
-app.config['SECRET_KEY'] = secrets.token_hex(32)
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY') or secrets.token_hex(32)
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = (os.getenv('FLASK_DEBUG', 'false').lower() not in {'true', '1', 'yes'})
 
 # Allowed CDN hosts for yt-dlp resolved audio stream proxying (SSRF guard).
 # yt-dlp returns googlevideo.com URLs for YouTube streams under normal operation.
@@ -256,15 +257,15 @@ def _check_webhook_basic_auth():
     if not expected_username and not expected_password:
         return None
     if not expected_username or not expected_password:
-        # Partial configuration: only one credential is set, which would allow
-        # authentication with an empty counterpart.  Treat as misconfigured and
-        # skip auth rather than silently accepting requests with a half-check.
-        logger.warning(
+        # Partial configuration: only one credential is set.  Deny all requests
+        # rather than silently accepting them — the operator must either set both
+        # variables or clear both to disable webhook auth entirely.
+        logger.error(
             'Webhook Basic Auth is partially configured (only one of '
-            'WEBHOOK_USERNAME / WEBHOOK_PASSWORD is set); authentication skipped. '
-            'Set both variables to enable webhook Basic Auth.'
+            'WEBHOOK_USERNAME / WEBHOOK_PASSWORD is set); rejecting all '
+            'webhook requests until both are set or both are cleared.'
         )
-        return None
+        return jsonify({'error': 'Webhook authentication misconfigured on server'}), 503
     auth = request.authorization
     if not auth:
         return jsonify({'error': 'Webhook authentication required'}), 401
@@ -567,7 +568,7 @@ def get_themerrdb_theme_for_external_ids(item_type, external_ids):
                 for cache_external_id in cache_ids:
                     if not cache_external_id:
                         continue
-                    _set_cached_themerrdb(cache_external_id, theme_data)
+                    _set_cached_themerrdb(cache_external_id, theme_data, themerr_item_type)
                 return theme_data
     return None
 
@@ -583,14 +584,16 @@ def get_themerrdb_theme_for_item(provider, item):
     return get_themerrdb_theme_for_external_ids(item_type, external_ids)
 
 
-def _get_themerrdb_cache_key(external_id):
-    """Generate cache key for ThemerrDB query."""
+def _get_themerrdb_cache_key(external_id, item_type=None):
+    """Generate cache key for ThemerrDB query, scoped to item type to avoid cross-type collisions."""
+    if item_type:
+        return f'themerrdb_{item_type}_{external_id}'
     return f'themerrdb_{external_id}'
 
 
-def _get_cached_themerrdb(external_id):
+def _get_cached_themerrdb(external_id, item_type=None):
     """Return (cache_hit, data) for a ThemerrDB cache lookup."""
-    cache_key = _get_themerrdb_cache_key(external_id)
+    cache_key = _get_themerrdb_cache_key(external_id, item_type)
     with _themerrdb_cache_lock:
         cached = _themerrdb_cache.get(cache_key)
         if cached and time.time() - cached['timestamp'] < THEMERRDB_CACHE_TTL:
@@ -598,9 +601,9 @@ def _get_cached_themerrdb(external_id):
     return False, None
 
 
-def _set_cached_themerrdb(external_id, data):
+def _set_cached_themerrdb(external_id, data, item_type=None):
     """Cache ThemerrDB response."""
-    cache_key = _get_themerrdb_cache_key(external_id)
+    cache_key = _get_themerrdb_cache_key(external_id, item_type)
     with _themerrdb_cache_lock:
         _themerrdb_cache[cache_key] = {
             'data': data,
@@ -629,7 +632,7 @@ def query_themerrdb(item_type, database, external_id):
         return None
 
     # Check cache first
-    cache_hit, cached = _get_cached_themerrdb(external_id)
+    cache_hit, cached = _get_cached_themerrdb(external_id, item_type)
     if cache_hit:
         return cached
     
@@ -640,11 +643,11 @@ def query_themerrdb(item_type, database, external_id):
         
         if response.status_code == 200:
             data = response.json()
-            _set_cached_themerrdb(external_id, data)
+            _set_cached_themerrdb(external_id, data, item_type)
             return data
         elif response.status_code == 404:
             logger.debug('Theme not found in ThemerrDB')
-            _set_cached_themerrdb(external_id, None)
+            _set_cached_themerrdb(external_id, None, item_type)
             return None
         else:
             logger.warning('ThemerrDB query failed with status %s', response.status_code)
@@ -793,7 +796,11 @@ def _download_youtube_theme_mp3(youtube_url, tmpdir):
     raise yt_dlp.utils.DownloadError(' | '.join(errors))
 
 def is_valid_upload(upload_file):
-    """Validate uploaded theme file name, type, and size."""
+    """Validate uploaded theme file name, type, and size.
+
+    Checks filename extension, Content-Type, and MP3 magic bytes to prevent
+    non-audio files from being accepted via forged or missing MIME types.
+    """
     if request.content_length and request.content_length > MAX_UPLOAD_BYTES:
         return False, ('Uploaded file is too large', 413)
 
@@ -801,9 +808,12 @@ def is_valid_upload(upload_file):
     if not filename.endswith('.mp3'):
         return False, ('Only MP3 uploads are supported', 400)
 
-    content_type = (upload_file.content_type or '').lower()
+    content_type = (upload_file.content_type or '').lower().split(';')[0].strip()
     if not content_type or content_type not in ALLOWED_UPLOAD_TYPES:
         return False, ('Uploaded file must be an MP3 (audio/mpeg)', 400)
+
+    if not _is_valid_mp3_magic(upload_file.stream):
+        return False, ('File content does not appear to be a valid MP3', 400)
 
     return True, None
 
@@ -1516,22 +1526,43 @@ def get_settings_runtime():
     })
 
 
+@app.after_request
+def add_security_headers(response):
+    """Add security-relevant HTTP response headers to every response."""
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('X-Frame-Options', 'DENY')
+    response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+    response.headers.setdefault('Permissions-Policy', 'geolocation=(), microphone=(), camera=()')
+    response.headers.setdefault(
+        'Content-Security-Policy',
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https://cdn.jsdelivr.net https://app.lizardbyte.dev; "
+        "media-src 'self' blob: https://*.googlevideo.com; "
+        "frame-src https://www.youtube-nocookie.com; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self';"
+    )
+    return response
+
+
 @app.before_request
 def enforce_api_auth():
     """Protect API endpoints with API key or session auth."""
     _ensure_startup_warmup()
     if not request.path.startswith('/api/'):
         return None
-    if request.path in {'/api/auth/login', '/api/init'}:
-        return None  # Always public
+    # Always-public endpoints: login flow and initial auth-state probe.
+    # /api/cache/status is also kept public so the startup overlay works
+    # before the user has authenticated.
+    if request.path in {'/api/auth/login', '/api/init', '/api/cache/status'}:
+        return None
     if request.path == '/api/webhooks/plex':
         return None  # Webhook uses its own Basic Auth
-    if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
-        return _check_api_request_auth()
-    # Also protect the settings/runtime GET since it now returns the API key
-    if request.path == '/api/settings/runtime':
-        return _check_api_request_auth()
-    return None
+    # Require auth for ALL API routes (both read and mutating)
+    return _check_api_request_auth()
 
 
 @app.route('/api/status')
@@ -1605,8 +1636,9 @@ def get_status():
             jellyfin_status['error'] = 'Unable to connect to Jellyfin'
 
     # Keep these top-level fields for backwards compatibility with existing clients.
+    # `connected` is True when either Plex or Jellyfin is reachable.
     response_payload = {
-        'connected': plex_status['connected'],
+        'connected': plex_status['connected'] or jellyfin_status['connected'],
         'server_name': plex_status['server_name'],
         'version': plex_status['version'],
         'plex': plex_status,
@@ -1961,6 +1993,8 @@ def youtube_search():
     query = (request.args.get('q') or '').strip()
     if not query:
         return jsonify({'error': 'Search query is required'}), 400
+    if len(query) > 200:
+        return jsonify({'error': 'Search query is too long'}), 400
 
     try:
         limit = min(int(request.args.get('limit', 5)), 10)
@@ -1973,8 +2007,9 @@ def youtube_search():
             'no_warnings': True,
             'extract_flat': True,
             'skip_download': True,
-            'js_runtimes': {'node': {}},
-            'remote_components': ['ejs:github'],
+            'noplaylist': True,
+            'socket_timeout': 30,
+            # DO NOT add remote_components or js_runtimes — see app/youtube_utils.py
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f'ytsearch{limit}:{query}', download=False)
