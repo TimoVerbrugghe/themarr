@@ -10,7 +10,7 @@ It supports **Plex and Jellyfin libraries side-by-side** and can save themes as 
 Theme download sources in the web UI:
 
 - **Plex** (provider theme, where available)
-- **ThemerrDB** (matched via IMDB/TVDB IDs for Plex items)
+- **ThemerrDB** (matched via IMDB/TMDB/TVDB IDs for Plex and Jellyfin items)
 - **YouTube** (via `yt-dlp`)
 
 You can also upload custom MP3 files and copy existing local themes between items.
@@ -21,7 +21,7 @@ You can also upload custom MP3 files and copy existing local themes between item
   Browse **Plex Libraries** and **Jellyfin Libraries** in separate sidebar groups in one UI.
 
 - **Three download sources**  
-  Download from **Plex**, **ThemerrDB**, or **YouTube**.
+  Download from **Plex** (Plex items), **ThemerrDB** (Plex + Jellyfin), or **YouTube**.
 
 - **Upload and copy local themes**  
   Upload custom MP3 files or copy `theme.mp3` between items/libraries.
@@ -99,7 +99,8 @@ volumes:
 |---|---|---|
 | Download from Plex source | ✅ | ❌ |
 | Preview Plex source theme | ✅ | ❌ |
-| Download from ThemerrDB | ✅ (via IMDB/TVDB) | ❌ |
+| Download from ThemerrDB | ✅ (via IMDB/TMDB/TVDB) | ✅ (via IMDB/TMDB/TVDB) |
+| Preview ThemerrDB source theme | ✅ | ✅ |
 | Download from YouTube | ✅ | ✅ |
 | Upload local MP3 | ✅ | ✅ |
 | Copy local theme | ✅ | ✅ |
