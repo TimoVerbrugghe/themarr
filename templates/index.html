@@ -134,6 +134,26 @@
           <div id="settings-action-result" class="settings-action-result hidden"></div>
         </div>
 
+        <div class="settings-section">
+          <h2 class="settings-section-title">Runtime Security & Limits</h2>
+          <table class="settings-envtable">
+            <tbody>
+              <tr>
+                <td><strong>API auth token</strong></td>
+                <td colspan="2">
+                  <code id="runtime-api-token">Loading…</code>
+                  <button class="btn btn-secondary btn-sm" type="button" onclick="copyApiToken()">Copy</button>
+                  <div id="runtime-api-token-source">Loading…</div>
+                </td>
+              </tr>
+              <tr><td><strong>Background workers</strong></td><td colspan="2"><code id="runtime-worker-count">—</code></td></tr>
+              <tr><td><strong>Library page size</strong></td><td colspan="2"><code id="runtime-library-page-size">—</code></td></tr>
+              <tr><td><strong>Max library page size</strong></td><td colspan="2"><code id="runtime-library-page-max">—</code></td></tr>
+              <tr><td><strong>Poster cache max items</strong></td><td colspan="2"><code id="runtime-poster-cache-max">—</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
         <!-- Environment variables reference -->
         <div class="settings-section">
           <h2 class="settings-section-title">Environment Variables</h2>
@@ -160,12 +180,13 @@
               <tr><td><code>DEFAULT_THEME</code></td><td><code>dark</code></td><td>Initial colour theme (<code>dark</code> or <code>light</code>). Users can override this in-browser.</td></tr>
               <tr><td><code>DEFAULT_VIEW</code></td><td><code>list</code></td><td>Initial library view (<code>list</code> or <code>grid</code>). Users can override this in-browser via the view-toggle buttons.</td></tr>
               <tr><td><code>FLASK_DEBUG</code></td><td><code>false</code></td><td>Enable Flask debug mode. Do not use in production.</td></tr>
+              <tr><td><code>API_AUTH_TOKEN</code></td><td><code>auto-generated</code></td><td>API token used for all mutating API routes. If unset, Themarr generates a startup token and shows it above.</td></tr>
               <tr class="settings-envtable-group"><td colspan="3">Notifications (optional)</td></tr>
               <tr><td><code>PUSHOVER_APP_TOKEN</code></td><td>—</td><td>Pushover application token. Leave blank to disable push notifications.</td></tr>
               <tr><td><code>PUSHOVER_USER_KEY</code></td><td>—</td><td>Pushover user/group key. Leave blank to disable push notifications.</td></tr>
               <tr class="settings-envtable-group"><td colspan="3">Webhooks (optional)</td></tr>
-              <tr><td><code>WEBHOOK_USERNAME</code></td><td>—</td><td>Basic-auth username for the Sonarr/Radarr webhook endpoints.</td></tr>
-              <tr><td><code>WEBHOOK_PASSWORD</code></td><td>—</td><td>Basic-auth password for the Sonarr/Radarr webhook endpoints.</td></tr>
+              <tr><td><code>WEBHOOK_USERNAME</code></td><td>—</td><td>Basic-auth username for the Plex webhook endpoint.</td></tr>
+              <tr><td><code>WEBHOOK_PASSWORD</code></td><td>—</td><td>Basic-auth password for the Plex webhook endpoint.</td></tr>
               <tr><td><code>PLEX_RETRY_ATTEMPTS</code></td><td><code>10</code></td><td>Max number of Plex lookup attempts after a webhook event.</td></tr>
               <tr><td><code>PLEX_RETRY_DELAY</code></td><td><code>30</code></td><td>Seconds between each Plex lookup attempt (linearly increasing).</td></tr>
             </tbody>

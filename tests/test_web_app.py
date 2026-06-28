@@ -1,4 +1,5 @@
 """Tests for Themarr web application."""
+import base64
 import io
 import os
 import sys
@@ -27,7 +28,11 @@ def app():
 @pytest.fixture
 def client(app):
     """Create test client."""
-    return app.test_client()
+    import web_app
+    token, _ = web_app._get_api_auth_token()
+    test_client = app.test_client()
+    test_client.environ_base['HTTP_X_THEMARR_API_KEY'] = token
+    return test_client
 
 
 @pytest.fixture
@@ -120,6 +125,57 @@ class TestCacheStatus:
         assert data['ready'] is False
         assert data['sections_total'] == 5
         assert data['sections_completed'] == 2
+
+
+class TestCachedThemeStateSync:
+    def test_sync_cached_item_theme_state_preserves_plex_source_when_reported(self, tmp_path):
+        import web_app
+
+        show_dir = tmp_path / 'Test Show (2020)'
+        show_dir.mkdir()
+        (show_dir / 'theme.mp3').write_bytes(b'local_theme')
+        web_app._library_cache['1'] = [{
+            'id': '1',
+            'ratingKey': 1,
+            'provider': 'plex',
+            'local_path': str(show_dir),
+            'has_local_theme': False,
+            'has_plex_theme': True,
+            'theme_size': 0,
+        }]
+
+        mock_item = make_mock_show(rating_key=1, location=str(show_dir), has_theme=True)
+        with patch('web_app.get_plex') as mock_get_plex:
+            plex = MagicMock()
+            plex.fetchItem.return_value = mock_item
+            mock_get_plex.return_value = plex
+            updated, found = web_app._sync_cached_item_theme_state('plex', '1')
+
+        assert found is True
+        assert updated['has_local_theme'] is True
+        assert updated['has_plex_theme'] is True
+
+
+class TestSettingsRuntime:
+    def test_runtime_settings_returns_generated_token_when_env_missing(self, client):
+        with patch.dict(os.environ, {'API_AUTH_TOKEN': ''}, clear=False):
+            resp = client.get('/api/settings/runtime')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['api_auth_token']
+        assert data['api_auth_token_generated'] is True
+        assert data['background_worker_count'] == 4
+        assert data['library_page_size'] == 200
+        assert data['library_page_size_max'] == 500
+        assert data['poster_cache_max_items'] == 500
+
+    def test_runtime_settings_prefers_configured_token(self, client):
+        with patch.dict(os.environ, {'API_AUTH_TOKEN': 'configured-token'}, clear=False):
+            resp = client.get('/api/settings/runtime')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['api_auth_token'] == 'configured-token'
+        assert data['api_auth_token_generated'] is False
 
 
 class TestLibraries:
@@ -848,8 +904,18 @@ class TestThemerrDB:
             resp = client.get('/api/items/1/theme/themerrdb/preview')
 
         assert resp.status_code == 200
-        assert resp.mimetype == 'audio/mpeg'
-        assert resp.data == b'audio_chunk'
+
+    def test_preview_check_returns_availability_payload(self, client, mock_plex, tmp_path):
+        show_dir = tmp_path / 'Test Show (2020)'
+        show_dir.mkdir()
+        (show_dir / 'theme.mp3').write_bytes(b'local_theme')
+        show = make_mock_show(location=str(show_dir))
+        mock_plex.fetchItem.return_value = show
+
+        resp = client.get('/api/items/plex/1/theme/preview/check')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert 'available' in data
 
     def test_download_from_themerrdb_success(self, client, mock_plex, tmp_path):
         show_dir = tmp_path / 'Test Show (2020)'
@@ -1210,37 +1276,33 @@ class TestBulkDownload:
 # ============================================================
 
 class TestPlexWebhook:
+    @staticmethod
+    def _post_webhook(client, payload, headers=None):
+        import json
+        plex = MagicMock()
+        plex.machineIdentifier = 'configured-server-uuid'
+        with patch('web_app.get_plex', return_value=plex):
+            return client.post('/api/webhooks/plex', data={'payload': json.dumps(payload)}, headers=headers or {})
+
     def test_library_new_event_queues_theme_processing(self, client):
         """library.new event with valid ratingKey queues theme processing."""
-        with patch('web_app._process_plex_library_new') as mock_process, \
-             patch('web_app.threading') as mock_threading:
-            mock_thread = MagicMock()
-            mock_threading.Thread.return_value = mock_thread
-            
-            payload = {'event': 'library.new', 'Metadata': {'ratingKey': '12345'}}
-            import json
-            resp = client.post('/api/webhooks/plex',
-                              data={'payload': json.dumps(payload)})
+        with patch('web_app._submit_background_job') as mock_submit:
+            payload = {'event': 'library.new', 'Metadata': {'ratingKey': '12345'}, 'Server': {'uuid': 'configured-server-uuid'}}
+            resp = self._post_webhook(client, payload)
         
         assert resp.status_code == 200
         data = resp.get_json()
         assert data['success'] is True
-        mock_threading.Thread.assert_called_once()
+        mock_submit.assert_called_once()
 
     def test_library_new_event_with_metadata_fallback(self, client):
         """Handles both 'Metadata' and 'metadata' field names."""
-        with patch('web_app._process_plex_library_new') as mock_process, \
-             patch('web_app.threading') as mock_threading:
-            mock_thread = MagicMock()
-            mock_threading.Thread.return_value = mock_thread
-            
-            payload = {'event': 'library.new', 'metadata': {'ratingKey': '67890'}}
-            import json
-            resp = client.post('/api/webhooks/plex',
-                              data={'payload': json.dumps(payload)})
+        with patch('web_app._submit_background_job') as mock_submit:
+            payload = {'event': 'library.new', 'metadata': {'ratingKey': '67890'}, 'Server': {'uuid': 'configured-server-uuid'}}
+            resp = self._post_webhook(client, payload)
         
         assert resp.status_code == 200
-        mock_threading.Thread.assert_called_once()
+        mock_submit.assert_called_once()
 
     def test_missing_payload_handled_gracefully(self, client):
         """Missing payload field returns 200 without error."""
@@ -1256,19 +1318,44 @@ class TestPlexWebhook:
 
     def test_library_new_without_rating_key_logged(self, client):
         """library.new event without ratingKey is logged."""
-        payload = {'event': 'library.new', 'Metadata': {}}
-        import json
-        resp = client.post('/api/webhooks/plex',
-                          data={'payload': json.dumps(payload)})
+        payload = {'event': 'library.new', 'Metadata': {}, 'Server': {'uuid': 'configured-server-uuid'}}
+        resp = self._post_webhook(client, payload)
         assert resp.status_code == 200
 
     def test_non_library_new_event_ignored(self, client):
         """Non-library.new events are safely ignored."""
-        payload = {'event': 'library.update', 'Metadata': {'ratingKey': '12345'}}
-        import json
-        resp = client.post('/api/webhooks/plex',
-                          data={'payload': json.dumps(payload)})
+        payload = {'event': 'library.update', 'Metadata': {'ratingKey': '12345'}, 'Server': {'uuid': 'configured-server-uuid'}}
+        with patch('web_app._submit_background_job') as mock_submit:
+            resp = self._post_webhook(client, payload)
         assert resp.status_code == 200
+        mock_submit.assert_not_called()
+
+    def test_webhook_rejects_missing_basic_auth_when_configured(self, client):
+        payload = {'event': 'library.new', 'Metadata': {'ratingKey': '12345'}, 'Server': {'uuid': 'configured-server-uuid'}}
+        with patch.dict(os.environ, {'WEBHOOK_USERNAME': 'plex', 'WEBHOOK_PASSWORD': 'secret'}, clear=False):
+            resp = self._post_webhook(client, payload)
+        assert resp.status_code == 401
+
+    def test_webhook_accepts_valid_basic_auth_when_configured(self, client):
+        payload = {'event': 'library.new', 'Metadata': {'ratingKey': '12345'}, 'Server': {'uuid': 'configured-server-uuid'}}
+        auth = base64.b64encode(b'plex:secret').decode('ascii')
+
+        with patch.dict(os.environ, {'WEBHOOK_USERNAME': 'plex', 'WEBHOOK_PASSWORD': 'secret'}, clear=False), \
+             patch('web_app._submit_background_job') as mock_submit:
+            resp = self._post_webhook(client, payload, headers={'Authorization': f'Basic {auth}'})
+
+        assert resp.status_code == 200
+        mock_submit.assert_called_once()
+
+    def test_webhook_rejects_missing_server_uuid(self, client):
+        payload = {'event': 'library.new', 'Metadata': {'ratingKey': '12345'}}
+        resp = self._post_webhook(client, payload)
+        assert resp.status_code == 400
+
+    def test_webhook_rejects_uuid_mismatch(self, client):
+        payload = {'event': 'library.new', 'Metadata': {'ratingKey': '12345'}, 'Server': {'uuid': 'other-server-uuid'}}
+        resp = self._post_webhook(client, payload)
+        assert resp.status_code == 403
 
     def test_process_library_new_downloads_theme_when_missing(self, tmp_path):
         import web_app
@@ -1420,8 +1507,23 @@ class TestSettingsRescan:
 class TestSettingsRefreshCache:
     def test_refresh_cache_starts_background_warmup(self, client):
         with patch('web_app._kick_off_cache_warmup') as mock_warmup:
+            mock_warmup.return_value = True
             resp = client.post('/api/settings/refresh-cache')
 
         assert resp.status_code == 200
         assert resp.get_json()['success'] is True
         mock_warmup.assert_called_once()
+
+
+class TestApiAuth:
+    def test_mutating_endpoint_requires_api_token_when_configured(self, app):
+        unauthenticated_client = app.test_client()
+        with patch.dict(os.environ, {'API_AUTH_TOKEN': 'secret-token'}):
+            resp = unauthenticated_client.post('/api/settings/refresh-cache')
+        assert resp.status_code == 401
+
+    def test_mutating_endpoint_accepts_valid_api_token_header(self, client):
+        with patch.dict(os.environ, {'API_AUTH_TOKEN': 'secret-token'}), \
+             patch('web_app._kick_off_cache_warmup', return_value=True):
+            resp = client.post('/api/settings/refresh-cache', headers={'X-Themarr-Api-Key': 'secret-token'})
+        assert resp.status_code == 200

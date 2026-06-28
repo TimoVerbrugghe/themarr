@@ -43,14 +43,76 @@ let activePlayBtn = null; // button element that triggered playback
 const STARTUP_POLL_INTERVAL_MS = 1500;
 let lastCompactActionMenuMode = null;
 const ACTION_MENU_COLLAPSE_BREAKPOINT = 1200;
+let apiAuthToken = '';
 
 function makeLibraryCacheKey(provider, libraryId) {
   return `${provider}:${libraryId}`;
 }
 
+function copyApiToken() {
+  const tokenEl = document.getElementById('runtime-api-token');
+  if (!tokenEl) return;
+  const token = tokenEl.textContent || '';
+  if (!token) return;
+  navigator.clipboard.writeText(token)
+    .then(() => showSettingsResult(true, '✓ API token copied to clipboard'))
+    .catch((err) => showSettingsResult(false, `✗ Failed to copy token: ${err}`));
+}
+
+async function loadSettingsRuntime() {
+  try {
+    const data = await refreshApiAuthToken();
+    const tokenEl = document.getElementById('runtime-api-token');
+    const sourceEl = document.getElementById('runtime-api-token-source');
+    const workersEl = document.getElementById('runtime-worker-count');
+    const pageSizeEl = document.getElementById('runtime-library-page-size');
+    const pageMaxEl = document.getElementById('runtime-library-page-max');
+    const posterCacheEl = document.getElementById('runtime-poster-cache-max');
+    if (tokenEl) tokenEl.textContent = apiAuthToken || 'Unavailable';
+    if (sourceEl) sourceEl.textContent = data.api_auth_token_generated ? 'auto-generated at startup' : 'from API_AUTH_TOKEN';
+    if (workersEl) workersEl.textContent = String(data.background_worker_count);
+    if (pageSizeEl) pageSizeEl.textContent = String(data.library_page_size);
+    if (pageMaxEl) pageMaxEl.textContent = String(data.library_page_size_max);
+    if (posterCacheEl) posterCacheEl.textContent = String(data.poster_cache_max_items);
+  } catch (err) {
+    showSettingsResult(false, `✗ Failed to load runtime settings: ${err}`);
+  }
+}
+
+async function refreshApiAuthToken() {
+  const data = await apiGet('/api/settings/runtime');
+  apiAuthToken = data.api_auth_token || '';
+  return data;
+}
+
 function libraryItemsPath(provider, libraryId) {
   if (provider === 'plex') return `/api/libraries/${libraryId}/items`;
   return `/api/libraries/${provider}/${encodeURIComponent(libraryId)}/items`;
+}
+
+function libraryItemsPagePath(provider, libraryId, page, pageSize = 200) {
+  const basePath = libraryItemsPath(provider, libraryId);
+  const params = new URLSearchParams({
+    paginated: 'true',
+    page: String(page),
+    page_size: String(pageSize),
+  });
+  return `${basePath}?${params.toString()}`;
+}
+
+async function fetchLibraryItems(provider, libraryId) {
+  const allItems = [];
+  let page = 1;
+
+  while (true) {
+    const payload = await apiGet(libraryItemsPagePath(provider, libraryId, page));
+    const pageItems = Array.isArray(payload?.items) ? payload.items : [];
+    const hasMore = Boolean(payload?.pagination?.has_more);
+    allItems.push(...pageItems);
+    if (!hasMore) break;
+    page += 1;
+  }
+  return allItems;
 }
 
 function providerPosterPath(item) {
@@ -138,6 +200,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  try {
+    await refreshApiAuthToken();
+  } catch (err) {
+    console.error('Failed to load API auth token', err);
+  }
   await waitForStartupHydration();
   loadLibraries();
 });
@@ -345,7 +412,7 @@ async function selectLibrary(provider, id, title) {
 
   document.getElementById('items-loading').classList.remove('hidden');
   try {
-    const items = await apiGet(libraryItemsPath(provider, id));
+    const items = await fetchLibraryItems(provider, id);
     libraryCache.set(cacheKey, items);
     currentItems = items;
     document.getElementById('items-loading').classList.add('hidden');
@@ -887,7 +954,7 @@ async function executeBulkDownload(overwrite) {
     showToast('success', `Bulk done: ${s} downloaded, ${sk} skipped, ${n} no theme, ${f} failed`);
     // Refresh item cards for successfully downloaded items
     if (s > 0 && currentLibraryId) {
-      const items = await apiGet(libraryItemsPath(currentLibraryProvider, currentLibraryId));
+      const items = await fetchLibraryItems(currentLibraryProvider, currentLibraryId);
       libraryCache.set(makeLibraryCacheKey(currentLibraryProvider, currentLibraryId), items);
       currentItems = items;
       updateStats(items);
@@ -1128,7 +1195,7 @@ async function populateCopyThemeSources(sourceLibraryId) {
     const sourceCacheKey = makeLibraryCacheKey(sourceProvider, sourceLibraryKey);
     let items = libraryCache.get(sourceCacheKey);
     if (!items) {
-      items = await apiGet(libraryItemsPath(sourceProvider, sourceLibraryKey));
+      items = await fetchLibraryItems(sourceProvider, sourceLibraryKey);
       libraryCache.set(sourceCacheKey, items);
     }
 
@@ -1251,10 +1318,7 @@ async function confirmUpload() {
   formData.append('overwrite', overwrite ? 'true' : 'false');
 
   try {
-    const resp = await fetch(`/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme/upload`, {
-      method: 'POST',
-      body: formData,
-    });
+    const resp = await apiFormPost(`/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme/upload`, formData);
     const data = await resp.json();
     if (data.error && data.exists) {
       showToast('info', 'Theme already exists. Enable overwrite to replace it.');
@@ -1479,20 +1543,12 @@ async function confirmThemerrdb() {
   btn.disabled = true;
 
   try {
-    const resp = await fetch(
+    const data = await apiPost(
       `/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme/themerrdb`,
-      {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ overwrite }),
-      },
+      { overwrite },
     );
-    const data = await resp.json();
     progressEl.classList.add('hidden');
-
-    if (!resp.ok) {
-      showToast('error', data.error || 'ThemerrDB download failed');
-    } else if (data.error && data.exists) {
+    if (data.error && data.exists) {
       showToast('info', 'Theme already exists. Enable overwrite to replace it.');
     } else if (data.success) {
       showToast('success', 'ThemerrDB theme downloaded successfully!');
@@ -1522,8 +1578,7 @@ function openDeleteModal(item) {
 
 async function confirmDelete() {
   try {
-    const resp = await fetch(`/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme`, { method: 'DELETE' });
-    const data = await resp.json();
+    const data = await apiDelete(`/api/items/${activeItemContext.provider}/${encodeURIComponent(activeItemContext.id)}/theme`);
     if (data.success) {
       showToast('success', 'Theme deleted.');
       closeModal('modal-delete');
@@ -1571,7 +1626,7 @@ function applyServerItemUpdate(updatedItem) {
 async function refreshItem(ratingKey) {
   if (!currentLibraryId) return;
   try {
-    const items = await apiGet(libraryItemsPath(currentLibraryProvider, currentLibraryId));
+    const items = await fetchLibraryItems(currentLibraryProvider, currentLibraryId);
     libraryCache.set(makeLibraryCacheKey(currentLibraryProvider, currentLibraryId), items);
     currentItems = items;
     const updated = items.find((item) => String(item.id || item.ratingKey) === String(ratingKey));
@@ -1614,6 +1669,7 @@ function showSettingsPage(event) {
   const result = document.getElementById('settings-action-result');
   result.className = 'settings-action-result hidden';
   result.textContent = '';
+  loadSettingsRuntime();
 }
 
 function showSettingsResult(ok, message) {
@@ -1737,7 +1793,7 @@ function showToast(type, message) {
 // API helpers
 // ============================================================
 async function apiGet(url) {
-  const resp = await fetch(url);
+  const resp = await fetch(url, { headers: buildApiHeaders() });
   const data = await resp.json();
   if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
   return data;
@@ -1746,10 +1802,33 @@ async function apiGet(url) {
 async function apiPost(url, body) {
   const resp = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: buildApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
   });
-  return resp.json();
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+  return data;
+}
+
+async function apiDelete(url) {
+  const resp = await fetch(url, { method: 'DELETE', headers: buildApiHeaders() });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+  return data;
+}
+
+async function apiFormPost(url, formData) {
+  return fetch(url, {
+    method: 'POST',
+    headers: buildApiHeaders(),
+    body: formData,
+  });
+}
+
+function buildApiHeaders(extraHeaders = {}) {
+  const headers = { ...extraHeaders };
+  if (apiAuthToken) headers['X-Themarr-Api-Key'] = apiAuthToken;
+  return headers;
 }
 
 function escHtml(str) {

@@ -33,4 +33,4 @@ EXPOSE 8080
 USER themarr
 
 # Default: run the Web UI
-CMD ["python", "web_app.py"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "--timeout", "120", "web_app:app"]

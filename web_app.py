@@ -4,10 +4,13 @@
 import json
 import logging
 import os
+import secrets
 import shutil
 import tempfile
 import threading
 import time
+import hmac
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse
@@ -39,13 +42,22 @@ VIDEO_FILE_EXTENSIONS = {
 }
 THEMERRDB_API_BASE = 'https://app.lizardbyte.dev/ThemerrDB'
 THEMERRDB_CACHE_TTL = 24 * 3600  # 24 hours
+LIBRARY_PAGE_SIZE_DEFAULT = 200
+LIBRARY_PAGE_SIZE_MAX = 500
+POSTER_CACHE_MAX_ITEMS_DEFAULT = 500
+BACKGROUND_WORKER_COUNT_DEFAULT = 4
+POSTER_CACHE_MAX_ITEMS = POSTER_CACHE_MAX_ITEMS_DEFAULT
+BACKGROUND_WORKER_COUNT = BACKGROUND_WORKER_COUNT_DEFAULT
+LIBRARY_PAGE_SIZE = LIBRARY_PAGE_SIZE_DEFAULT
+LIBRARY_PAGE_SIZE_MAX_VALUE = LIBRARY_PAGE_SIZE_MAX
+app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_BYTES
 
 # In-memory cache for library items, warmed at startup to make first page loads instant.
 _library_cache: dict = {}        # {section_id: [item_dict, ...]}
 _library_cache_lock = threading.Lock()
 _section_build_locks: dict = {}  # {section_id: threading.Lock()}
 _section_build_locks_lock = threading.Lock()
-_poster_cache: dict = {}         # {rating_key: {'content': bytes, 'content_type': str}}
+_poster_cache = OrderedDict()    # {"provider:rating_key": {'content': bytes, 'content_type': str}}
 _poster_cache_lock = threading.Lock()
 _themerrdb_cache: dict = {}      # {cache_key: {'data': dict, 'timestamp': float}}
 _themerrdb_cache_lock = threading.Lock()
@@ -58,6 +70,21 @@ _theme_hydration_status = {
 _theme_hydration_status_lock = threading.Lock()
 _jellyfin_user_id_cache = {'value': None}
 _jellyfin_user_id_lock = threading.Lock()
+_background_executor = ThreadPoolExecutor(
+    max_workers=BACKGROUND_WORKER_COUNT,
+    thread_name_prefix='themarr-bg',
+)
+_background_job_lock = threading.Lock()
+_cache_warmup_future = None
+_poster_warmup_future = None
+_startup_warmup_started = False
+_startup_warmup_lock = threading.Lock()
+_generated_api_auth_token = secrets.token_urlsafe(32)
+if not (os.getenv('API_AUTH_TOKEN') or '').strip():
+    logger.warning(
+        'API_AUTH_TOKEN is not set; generated startup token: %s',
+        _generated_api_auth_token,
+    )
 
 def error_response(message, status_code=500, exc=None):
     """Return a safe JSON error response while logging internal details."""
@@ -66,6 +93,134 @@ def error_response(message, status_code=500, exc=None):
     else:
         logger.error('%s: %s', message, exc)
     return jsonify({'error': message}), status_code
+
+
+def _parse_auth_token():
+    """Extract API token from supported auth headers."""
+    header_token = (request.headers.get('X-Themarr-Api-Key') or '').strip()
+    if header_token:
+        return header_token
+    auth_header = (request.headers.get('Authorization') or '').strip()
+    if auth_header.startswith('Bearer '):
+        return auth_header[7:].strip()
+    return ''
+
+
+def _get_api_auth_token():
+    """Return configured API token or generated fallback token."""
+    configured_token = (os.getenv('API_AUTH_TOKEN') or '').strip()
+    if configured_token:
+        return configured_token, False
+    return _generated_api_auth_token, True
+
+
+def _check_api_request_auth():
+    """Validate API auth token for mutating API routes."""
+    expected_token, _ = _get_api_auth_token()
+    provided_token = _parse_auth_token()
+    if provided_token and hmac.compare_digest(provided_token, expected_token):
+        return None
+    return jsonify({'error': 'Unauthorized API request'}), 401
+
+
+def _check_webhook_basic_auth():
+    """Validate optional webhook Basic Auth credentials."""
+    expected_username = (os.getenv('WEBHOOK_USERNAME') or '').strip()
+    expected_password = (os.getenv('WEBHOOK_PASSWORD') or '').strip()
+    if not expected_username and not expected_password:
+        return None
+    auth = request.authorization
+    if not auth:
+        return jsonify({'error': 'Webhook authentication required'}), 401
+    username_ok = hmac.compare_digest(auth.username or '', expected_username)
+    password_ok = hmac.compare_digest(auth.password or '', expected_password)
+    if username_ok and password_ok:
+        return None
+    return jsonify({'error': 'Invalid webhook credentials'}), 401
+
+
+def _check_webhook_server_uuid(payload):
+    """Validate webhook server UUID against the configured Plex server."""
+    server_info = payload.get('Server') or payload.get('server') or {}
+    if not isinstance(server_info, dict):
+        return jsonify({'error': 'Invalid webhook payload server metadata'}), 400
+    webhook_server_uuid = str(server_info.get('uuid') or '').strip()
+    if not webhook_server_uuid:
+        return jsonify({'error': 'Missing webhook server UUID'}), 400
+
+    try:
+        plex = get_plex()
+    except Exception as exc:
+        logger.warning('Plex webhook: failed to load configured Plex server for UUID check: %s', exc)
+        return jsonify({'error': 'Unable to validate webhook source server'}), 503
+
+    configured_uuid = str(getattr(plex, 'machineIdentifier', '') or '').strip()
+    if not configured_uuid:
+        logger.warning('Plex webhook: configured Plex server did not expose machineIdentifier')
+        return jsonify({'error': 'Unable to validate webhook source server'}), 503
+
+    if not hmac.compare_digest(webhook_server_uuid, configured_uuid):
+        logger.warning(
+            'Plex webhook rejected: server UUID mismatch (received=%s configured=%s)',
+            webhook_server_uuid,
+            configured_uuid,
+        )
+        return jsonify({'error': 'Webhook server UUID mismatch'}), 403
+    return None
+
+
+def _paginate_items(items):
+    """Return paginated payload when requested, otherwise return full list for compatibility."""
+    paginated = (request.args.get('paginated') or '').lower() in {'1', 'true', 'yes'}
+    page_arg = request.args.get('page')
+    page_size_arg = request.args.get('page_size')
+    if not paginated and page_arg is None and page_size_arg is None:
+        return items
+
+    try:
+        page = int(page_arg or 1)
+    except ValueError:
+        page = 1
+    page = max(1, page)
+
+    try:
+        page_size = int(page_size_arg or LIBRARY_PAGE_SIZE)
+    except ValueError:
+        page_size = LIBRARY_PAGE_SIZE
+    page_size = max(1, min(page_size, LIBRARY_PAGE_SIZE_MAX_VALUE))
+
+    total = len(items)
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_items = items[start:end]
+    return {
+        'items': page_items,
+        'pagination': {
+            'page': page,
+            'page_size': page_size,
+            'total': total,
+            'has_more': end < total,
+        },
+    }
+
+
+def _submit_background_job(name, fn, *args):
+    """Submit work to shared background executor with graceful rejection logging."""
+    try:
+        return _background_executor.submit(fn, *args)
+    except RuntimeError as exc:
+        logger.warning('Failed to queue background job %s: %s', name, exc)
+        return None
+
+
+def _ensure_startup_warmup():
+    """Kick off startup warmup once per process."""
+    global _startup_warmup_started
+    with _startup_warmup_lock:
+        if _startup_warmup_started:
+            return
+        _startup_warmup_started = True
+    _kick_off_cache_warmup()
 
 
 def get_plex():
@@ -639,6 +794,14 @@ def get_item_local_path(item):
     return None
 
 
+def get_validated_plex_local_path(item):
+    """Get and validate local filesystem path for a Plex library item."""
+    local_path = get_item_local_path(item)
+    if not local_path:
+        return None
+    return _validate_local_media_path(local_path)
+
+
 def is_valid_youtube_url(url):
     """Validate that a URL points to a supported YouTube host."""
     try:
@@ -833,12 +996,12 @@ def _process_plex_library_new(rating_key):
             logger.info("Plex webhook: '%s' has no theme in Plex — nothing to download", item.title)
             return
         
-        local_path = get_item_local_path(item)
+        local_path = get_validated_plex_local_path(item)
         if not local_path:
             logger.warning("Plex webhook: cannot determine local path for '%s'", item.title)
             return
         
-        theme_path = local_path / 'theme.mp3'
+        theme_path = _theme_file_path(local_path)
         if theme_path.exists() and theme_path.stat().st_size > 0:
             logger.info("Plex webhook: '%s' already has a theme file", item.title)
             return
@@ -1067,17 +1230,26 @@ def _get_cached_item(rating_key, provider=None):
 
 def _get_cached_poster(rating_key, provider='plex'):
     """Return cached poster payload dict for *(provider, rating_key)*, or None."""
+    cache_key = f'{provider}:{rating_key}'
     with _poster_cache_lock:
-        return _poster_cache.get(f'{provider}:{rating_key}')
+        cached = _poster_cache.get(cache_key)
+        if cached is None:
+            return None
+        _poster_cache.move_to_end(cache_key)
+        return cached
 
 
 def _set_cached_poster(rating_key, content, content_type, provider='plex'):
     """Store poster bytes in the in-memory poster cache."""
+    cache_key = f'{provider}:{rating_key}'
     with _poster_cache_lock:
-        _poster_cache[f'{provider}:{rating_key}'] = {
+        _poster_cache[cache_key] = {
             'content': content,
             'content_type': content_type,
         }
+        _poster_cache.move_to_end(cache_key)
+        while len(_poster_cache) > POSTER_CACHE_MAX_ITEMS:
+            _poster_cache.popitem(last=False)
 
 
 def _fetch_poster_bytes(plex, thumb, timeout=10):
@@ -1140,9 +1312,13 @@ def _warm_poster_cache():
 
 
 def _kick_off_poster_cache_warmup():
-    """Start poster warmup in a background thread."""
-    t = threading.Thread(target=_warm_poster_cache, daemon=True, name='poster-cache-rebuild')
-    t.start()
+    """Start poster warmup in background when one is not already running."""
+    global _poster_warmup_future
+    with _background_job_lock:
+        if _poster_warmup_future is not None and not _poster_warmup_future.done():
+            return False
+        _poster_warmup_future = _submit_background_job('poster-cache-rebuild', _warm_poster_cache)
+        return _poster_warmup_future is not None
 
 
 def _sync_cached_item(item):
@@ -1183,6 +1359,13 @@ def _sync_cached_item_theme_state(provider, item_id):
                 updated = dict(cached_item)
                 updated['has_local_theme'] = theme_size > 0
                 updated['theme_size'] = theme_size
+                if provider == 'plex':
+                    try:
+                        plex = get_plex()
+                        item = plex.fetchItem(int(target_id))
+                        updated['has_plex_theme'] = bool(getattr(item, 'theme', None))
+                    except Exception as exc:
+                        logger.warning('Unable to refresh Plex source availability for item %s: %s', target_id, exc)
                 section_items[idx] = updated
                 _library_cache[section_key] = section_items
                 return updated, True
@@ -1190,10 +1373,14 @@ def _sync_cached_item_theme_state(provider, item_id):
 
 
 def _kick_off_cache_warmup():
-    """Invalidate the cache and rebuild all sections in a background thread."""
-    _invalidate_library_cache()
-    t = threading.Thread(target=_warm_library_cache, daemon=True, name='library-cache-rebuild')
-    t.start()
+    """Invalidate and rebuild cache in background when one is not already running."""
+    global _cache_warmup_future
+    with _background_job_lock:
+        if _cache_warmup_future is not None and not _cache_warmup_future.done():
+            return False
+        _invalidate_library_cache()
+        _cache_warmup_future = _submit_background_job('library-cache-rebuild', _warm_library_cache)
+        return _cache_warmup_future is not None
 
 
 def _warm_library_cache():
@@ -1340,6 +1527,33 @@ def health():
     return jsonify({'status': 'healthy'}), 200
 
 
+@app.route('/api/settings/runtime')
+def get_settings_runtime():
+    """Expose runtime settings needed by the UI settings page."""
+    token, is_generated = _get_api_auth_token()
+    return jsonify({
+        'api_auth_token': token,
+        'api_auth_token_generated': is_generated,
+        'background_worker_count': BACKGROUND_WORKER_COUNT,
+        'library_page_size': LIBRARY_PAGE_SIZE,
+        'library_page_size_max': LIBRARY_PAGE_SIZE_MAX_VALUE,
+        'poster_cache_max_items': POSTER_CACHE_MAX_ITEMS,
+    })
+
+
+@app.before_request
+def enforce_mutating_api_auth():
+    """Protect mutating API endpoints with token auth."""
+    _ensure_startup_warmup()
+    if request.method not in {'POST', 'PUT', 'PATCH', 'DELETE'}:
+        return None
+    if not request.path.startswith('/api/'):
+        return None
+    if request.path == '/api/webhooks/plex':
+        return None
+    return _check_api_request_auth()
+
+
 @app.route('/api/status')
 def get_status():
     """Check Plex connection status."""
@@ -1411,19 +1625,19 @@ def get_library_items(section_id):
     with _library_cache_lock:
         cached = _library_cache.get(section_id)
     if cached is not None:
-        return jsonify(cached)
+        return jsonify(_paginate_items(cached))
 
     section_lock = _get_section_build_lock(section_id)
     with section_lock:
         with _library_cache_lock:
             cached = _library_cache.get(section_id)
         if cached is not None:
-            return jsonify(cached)
+            return jsonify(_paginate_items(cached))
         try:
             result = _build_library_items(section_id, provider='plex')
             with _library_cache_lock:
                 _library_cache[section_id] = result
-            return jsonify(result)
+            return jsonify(_paginate_items(result))
         except Exception as exc:
             return error_response(f'Failed to get items for section {section_id}', exc=exc)
 
@@ -1447,19 +1661,19 @@ def get_library_items_by_provider(provider, section_id):
     with _library_cache_lock:
         cached = _library_cache.get(cache_key)
     if cached is not None:
-        return jsonify(cached)
+        return jsonify(_paginate_items(cached))
 
     section_lock = _get_section_build_lock(cache_key)
     with section_lock:
         with _library_cache_lock:
             cached = _library_cache.get(cache_key)
         if cached is not None:
-            return jsonify(cached)
+            return jsonify(_paginate_items(cached))
         try:
             result = _build_library_items(section_id, provider='jellyfin')
             with _library_cache_lock:
                 _library_cache[cache_key] = result
-            return jsonify(result)
+            return jsonify(_paginate_items(result))
         except Exception as exc:
             return error_response(f'Failed to get items for {provider} section {section_id}', exc=exc)
 
@@ -1524,10 +1738,10 @@ def get_theme(rating_key):
     try:
         plex = get_plex()
         item = plex.fetchItem(rating_key)
-        local_path = get_item_local_path(item)
+        local_path = get_validated_plex_local_path(item)
         if not local_path:
             return jsonify({'error': 'Cannot determine local path for item'}), 404
-        theme_path = local_path / 'theme.mp3'
+        theme_path = _theme_file_path(local_path)
         if not theme_path.exists() or theme_path.stat().st_size == 0:
             return jsonify({'error': 'No theme file found'}), 404
         return send_file(str(theme_path), mimetype='audio/mpeg', conditional=True)
@@ -1565,11 +1779,11 @@ def download_theme_from_plex(rating_key):
         if not getattr(item, 'theme', None):
             return jsonify({'error': 'No theme available in Plex for this item'}), 404
 
-        local_path = get_item_local_path(item)
+        local_path = get_validated_plex_local_path(item)
         if not local_path:
             return jsonify({'error': 'Cannot determine local path for item'}), 404
 
-        theme_path = local_path / 'theme.mp3'
+        theme_path = _theme_file_path(local_path)
         data = request.get_json(silent=True) or {}
         overwrite = data.get('overwrite', False)
 
@@ -1617,19 +1831,19 @@ def copy_theme_from_item(rating_key):
         target_item = plex.fetchItem(rating_key)
         source_item = plex.fetchItem(source_rating_key)
 
-        target_local_path = get_item_local_path(target_item)
+        target_local_path = get_validated_plex_local_path(target_item)
         if not target_local_path:
             return jsonify({'error': 'Cannot determine local path for target item'}), 404
 
-        source_local_path = get_item_local_path(source_item)
+        source_local_path = get_validated_plex_local_path(source_item)
         if not source_local_path:
             return jsonify({'error': 'Cannot determine local path for source item'}), 404
 
-        source_theme_path = source_local_path / 'theme.mp3'
+        source_theme_path = _theme_file_path(source_local_path)
         if not source_theme_path.exists() or source_theme_path.stat().st_size == 0:
             return jsonify({'error': 'Source item has no local theme to copy'}), 404
 
-        target_theme_path = target_local_path / 'theme.mp3'
+        target_theme_path = _theme_file_path(target_local_path)
         if target_theme_path.exists() and target_theme_path.stat().st_size > 0 and not overwrite:
             return jsonify({'error': 'Theme already exists', 'exists': True}), 409
 
@@ -1657,11 +1871,11 @@ def upload_theme(rating_key):
         plex = get_plex()
         item = plex.fetchItem(rating_key)
 
-        local_path = get_item_local_path(item)
+        local_path = get_validated_plex_local_path(item)
         if not local_path:
             return jsonify({'error': 'Cannot determine local path for item'}), 404
 
-        theme_path = local_path / 'theme.mp3'
+        theme_path = _theme_file_path(local_path)
         overwrite = request.form.get('overwrite', 'false').lower() == 'true'
 
         if theme_path.exists() and theme_path.stat().st_size > 0 and not overwrite:
@@ -1675,6 +1889,9 @@ def upload_theme(rating_key):
 
         local_path.mkdir(parents=True, exist_ok=True)
         upload_file.save(str(theme_path))
+        if theme_path.stat().st_size > MAX_UPLOAD_BYTES:
+            theme_path.unlink(missing_ok=True)
+            return jsonify({'error': 'Uploaded file is too large'}), 413
 
         logger.info('Uploaded theme for %s to %s', item.title, theme_path)
         send_pushover_notification('Theme Uploaded', f'{item.title} theme uploaded')
@@ -1753,11 +1970,11 @@ def download_from_youtube(rating_key):
         plex = get_plex()
         item = plex.fetchItem(rating_key)
 
-        local_path = get_item_local_path(item)
+        local_path = get_validated_plex_local_path(item)
         if not local_path:
             return jsonify({'error': 'Cannot determine local path for item'}), 404
 
-        theme_path = local_path / 'theme.mp3'
+        theme_path = _theme_file_path(local_path)
 
         if theme_path.exists() and theme_path.stat().st_size > 0 and not overwrite:
             return jsonify({'error': 'Theme already exists', 'exists': True}), 409
@@ -1836,11 +2053,11 @@ def download_from_themerrdb(rating_key):
         plex = get_plex()
         item = plex.fetchItem(rating_key)
         
-        local_path = get_item_local_path(item)
+        local_path = get_validated_plex_local_path(item)
         if not local_path:
             return jsonify({'error': 'Cannot determine local path for item'}), 404
         
-        theme_path = local_path / 'theme.mp3'
+        theme_path = _theme_file_path(local_path)
         
         if theme_path.exists() and theme_path.stat().st_size > 0 and not overwrite:
             return jsonify({'error': 'Theme already exists', 'exists': True}), 409
@@ -1874,10 +2091,10 @@ def delete_theme(rating_key):
     try:
         plex = get_plex()
         item = plex.fetchItem(rating_key)
-        local_path = get_item_local_path(item)
+        local_path = get_validated_plex_local_path(item)
         if not local_path:
             return jsonify({'error': 'Cannot determine local path for item'}), 404
-        theme_path = local_path / 'theme.mp3'
+        theme_path = _theme_file_path(local_path)
         if not theme_path.exists():
             return jsonify({'error': 'No theme file to delete'}), 404
         theme_path.unlink()
@@ -2122,6 +2339,9 @@ def upload_provider_theme(provider, item_id):
 
         local_path.mkdir(parents=True, exist_ok=True)
         upload_file.save(str(theme_path))
+        if theme_path.stat().st_size > MAX_UPLOAD_BYTES:
+            theme_path.unlink(missing_ok=True)
+            return jsonify({'error': 'Uploaded file is too large'}), 413
 
         logger.info('Uploaded theme for %s item', provider)
         send_pushover_notification('Theme Uploaded', f"{context['title']} theme uploaded")
@@ -2232,7 +2452,7 @@ def bulk_download_themes():
                 results['no_theme'].append({'ratingKey': rating_key, 'title': item.title})
                 continue
 
-            local_path = get_item_local_path(item)
+            local_path = get_validated_plex_local_path(item)
             if not local_path:
                 results['failed'].append({
                     'ratingKey': rating_key,
@@ -2241,7 +2461,7 @@ def bulk_download_themes():
                 })
                 continue
 
-            theme_path = local_path / 'theme.mp3'
+            theme_path = _theme_file_path(local_path)
 
             if theme_path.exists() and theme_path.stat().st_size > 0 and not overwrite:
                 results['skipped'].append({'ratingKey': rating_key, 'title': item.title})
@@ -2287,6 +2507,10 @@ def plex_webhook():
     Plex sends webhooks as form-encoded data with a 'payload' field containing JSON.
     For library.new events, we extract the ratingKey and process the theme download.
     """
+    basic_auth_error = _check_webhook_basic_auth()
+    if basic_auth_error:
+        return basic_auth_error
+
     payload_str = request.form.get('payload', '')
     if not payload_str:
         logger.warning('Plex webhook: missing payload')
@@ -2297,6 +2521,10 @@ def plex_webhook():
     except json.JSONDecodeError:
         logger.warning('Plex webhook: invalid JSON payload')
         return jsonify({'success': True}), 200
+
+    server_validation_error = _check_webhook_server_uuid(payload)
+    if server_validation_error:
+        return server_validation_error
     
     event = payload.get('event', '')
     logger.info('Plex webhook: event=%s', event)
@@ -2308,13 +2536,11 @@ def plex_webhook():
         
         rating_key = metadata.get('ratingKey')
         if rating_key:
-            threading.Thread(
-                target=_process_plex_library_new,
-                args=(rating_key,),
-                daemon=True,
-                name=f'webhook-plex-{rating_key}',
-            ).start()
-            logger.info('Plex webhook: queued theme processing for ratingKey=%s', rating_key)
+            future = _submit_background_job(f'webhook-plex-{rating_key}', _process_plex_library_new, rating_key)
+            if future is None:
+                logger.warning('Plex webhook: failed to queue processing for ratingKey=%s', rating_key)
+            else:
+                logger.info('Plex webhook: queued theme processing for ratingKey=%s', rating_key)
         else:
             logger.warning('Plex webhook: library.new event without ratingKey')
     
@@ -2380,12 +2606,13 @@ def settings_rescan():
 @app.route('/api/settings/refresh-cache', methods=['POST'])
 def settings_refresh_cache():
     """Invalidate and rebuild the library item cache in the background."""
-    _kick_off_cache_warmup()
-    return jsonify({'success': True, 'message': 'Cache refresh started in background'})
+    started = _kick_off_cache_warmup()
+    if started:
+        return jsonify({'success': True, 'message': 'Cache refresh started in background'})
+    return jsonify({'success': True, 'message': 'Cache refresh already in progress'})
 
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', '8080'))
     debug = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
-    _kick_off_cache_warmup()
     app.run(host='0.0.0.0', port=port, debug=debug)

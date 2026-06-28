@@ -88,6 +88,9 @@ volumes:
 | `FLASK_DEBUG` | No | `false` | Enables Flask debug mode |
 | `DEFAULT_THEME` | No | `dark` | Default UI theme: `dark` or `light` |
 | `DEFAULT_VIEW` | No | `list` | Default library view: `list` or `grid` |
+| `API_AUTH_TOKEN` | No | auto-generated | Token for mutating API routes. If unset, Themarr generates one at startup and exposes it on the Settings page |
+| `WEBHOOK_USERNAME` | No | — | Optional Basic Auth username for Plex webhook endpoint |
+| `WEBHOOK_PASSWORD` | No | — | Optional Basic Auth password for Plex webhook endpoint |
 | `PUSHOVER_APP_TOKEN` | No | — | Pushover app token (required together with `PUSHOVER_USER_KEY`) |
 | `PUSHOVER_USER_KEY` | No | — | Pushover user/group key (required together with `PUSHOVER_APP_TOKEN`) |
 
@@ -119,6 +122,20 @@ Themarr can process Plex webhook events for newly added library items.
    http://<themarr-host>:8080/api/webhooks/plex
    ```
 4. Click **Save**
+
+### Optional webhook hardening
+
+- Themarr always validates webhook `Server.uuid` against the configured Plex server UUID (`machineIdentifier`) and rejects mismatches.
+- To harden ingestion, set `WEBHOOK_USERNAME` + `WEBHOOK_PASSWORD` and configure the webhook URL with credentials (e.g. `http://user:pass@host:8080/api/webhooks/plex`) so Plex sends Basic Auth.
+
+### API write protection (always enabled)
+
+All mutating API routes require either:
+
+- `X-Themarr-Api-Key: <token>` or
+- `Authorization: Bearer <token>`
+
+If `API_AUTH_TOKEN` is not set, Themarr generates a token at startup. You can copy the active token from **Settings → Runtime Security & Limits**.
 
 ## Screenshots
 
