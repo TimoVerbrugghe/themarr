@@ -84,19 +84,48 @@ def make_mock_movie(rating_key=2, title='Test Movie', year=2021, has_theme=True,
 
 class TestStatus:
     def test_status_connected(self, client, mock_plex):
-        resp = client.get('/api/status')
+        with patch.dict(os.environ, {'PLEX_URL': 'http://plex.local', 'PLEX_TOKEN': 'token'}, clear=False):
+            resp = client.get('/api/status')
         assert resp.status_code == 200
         data = resp.get_json()
         assert data['connected'] is True
         assert data['server_name'] == 'Test Plex Server'
+        assert data['plex']['url_configured'] is True
+        assert data['plex']['connected'] is True
 
     def test_status_disconnected(self, client):
-        with patch('web_app.get_plex', side_effect=Exception('Connection refused')):
-            resp = client.get('/api/status')
+        with patch.dict(os.environ, {'PLEX_URL': 'http://plex.local', 'PLEX_TOKEN': 'token'}, clear=False):
+            with patch('web_app.get_plex', side_effect=Exception('Connection refused')):
+                resp = client.get('/api/status')
             assert resp.status_code == 200
             data = resp.get_json()
             assert data['connected'] is False
             assert data['error'] == 'Unable to connect to Plex'
+            assert data['plex']['url_configured'] is True
+            assert data['plex']['connected'] is False
+
+    def test_status_hides_when_urls_not_configured(self, client):
+        with patch.dict(os.environ, {'PLEX_URL': '', 'JELLYFIN_URL': ''}, clear=False):
+            resp = client.get('/api/status')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['connected'] is False
+        assert data['plex']['url_configured'] is False
+        assert data['jellyfin']['url_configured'] is False
+
+    def test_status_includes_jellyfin_connected(self, client):
+        mock_response = MagicMock()
+        mock_response.content = b'{}'
+        mock_response.json.return_value = {'ServerName': 'Test Jellyfin', 'Version': '10.9.1'}
+        mock_response.raise_for_status.return_value = None
+        with patch.dict(os.environ, {'JELLYFIN_URL': 'http://jellyfin.local', 'JELLYFIN_API_KEY': 'j-key'}, clear=False):
+            with patch('web_app.jellyfin_session_get', return_value=mock_response):
+                resp = client.get('/api/status')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['jellyfin']['url_configured'] is True
+        assert data['jellyfin']['connected'] is True
+        assert data['jellyfin']['server_name'] == 'Test Jellyfin'
 
 
 class TestHealth:

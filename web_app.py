@@ -1473,17 +1473,63 @@ def enforce_api_auth():
 
 @app.route('/api/status')
 def get_status():
-    """Check Plex connection status."""
-    try:
-        plex = get_plex()
-        return jsonify({
-            'connected': True,
-            'server_name': plex.friendlyName,
-            'version': plex.version,
-        })
-    except Exception as exc:
-        logger.error('Plex connection failed: %s', exc)
-        return jsonify({'connected': False, 'error': 'Unable to connect to Plex'})
+    """Return connection status for Plex and Jellyfin."""
+    plex_url_configured = bool((os.getenv('PLEX_URL') or '').strip())
+    jellyfin_url_configured = bool((os.getenv('JELLYFIN_URL') or '').strip())
+
+    plex_status = {
+        'url_configured': plex_url_configured,
+        'connected': False,
+        'server_name': None,
+        'version': None,
+        'error': None,
+    }
+    jellyfin_status = {
+        'url_configured': jellyfin_url_configured,
+        'connected': False,
+        'server_name': None,
+        'version': None,
+        'error': None,
+    }
+
+    if plex_url_configured:
+        try:
+            plex = get_plex()
+            plex_status.update({
+                'connected': True,
+                'server_name': plex.friendlyName,
+                'version': plex.version,
+            })
+        except Exception as exc:
+            logger.error('Plex connection failed: %s', exc)
+            plex_status['error'] = 'Unable to connect to Plex'
+
+    if jellyfin_url_configured:
+        try:
+            jellyfin = get_jellyfin()
+            response = jellyfin_session_get(jellyfin, '/System/Info/Public', timeout=JELLYFIN_TIMEOUT_SECONDS)
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+            jellyfin_status.update({
+                'connected': True,
+                'server_name': payload.get('ServerName') or payload.get('Name'),
+                'version': payload.get('Version'),
+            })
+        except Exception as exc:
+            logger.error('Jellyfin connection failed: %s', exc)
+            jellyfin_status['error'] = 'Unable to connect to Jellyfin'
+
+    # Keep these top-level fields for backwards compatibility with existing clients.
+    response_payload = {
+        'connected': plex_status['connected'],
+        'server_name': plex_status['server_name'],
+        'version': plex_status['version'],
+        'plex': plex_status,
+        'jellyfin': jellyfin_status,
+    }
+    if plex_status['error']:
+        response_payload['error'] = plex_status['error']
+    return jsonify(response_payload)
 
 
 @app.route('/api/libraries')

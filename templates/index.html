@@ -29,7 +29,11 @@
         <img class="logo-image" src="/static/logo-themarr.svg?v={{ asset_version }}" alt="Themarr">
       </a>
       <div class="header-right">
-        <div id="plex-status" class="plex-status plex-status--unknown">
+        <div id="jellyfin-status" class="plex-status plex-status--unknown" style="display:none;">
+          <span class="status-dot"></span>
+          <span id="jellyfin-status-text">Connecting…</span>
+        </div>
+        <div id="plex-status" class="plex-status plex-status--unknown" style="display:none;">
           <span class="status-dot"></span>
           <span id="plex-status-text">Connecting…</span>
         </div>

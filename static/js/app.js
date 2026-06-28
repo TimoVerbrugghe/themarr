@@ -271,7 +271,7 @@ function handleActionMenuBreakpointChange() {
 document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
   setView(currentView);  // apply default view and sync button active states
-  checkPlexStatus();
+  checkConnectionStatuses();
   document.addEventListener('click', () => closeAllRowActionMenus());
   lastCompactActionMenuMode = isCompactActionMenuMode();
   window.addEventListener('resize', handleActionMenuBreakpointChange);
@@ -422,23 +422,45 @@ function toggleTheme() {
 }
 
 // ============================================================
-// Plex Status
+// Connection status
 // ============================================================
-async function checkPlexStatus() {
-  const el = document.getElementById('plex-status');
-  const txt = document.getElementById('plex-status-text');
+function setProviderConnectionStatus(providerName, status, statusElementId, statusTextId) {
+  const el = document.getElementById(statusElementId);
+  const txt = document.getElementById(statusTextId);
+  if (!el || !txt) return;
+
+  const shouldShow = Boolean(status?.url_configured);
+  el.style.display = shouldShow ? 'flex' : 'none';
+  if (!shouldShow) return;
+
+  if (status?.connected) {
+    el.className = 'plex-status plex-status--connected';
+    txt.textContent = `${providerName} Connected (${status.server_name || 'Unknown'})`;
+  } else {
+    el.className = 'plex-status plex-status--error';
+    txt.textContent = 'Not connected';
+  }
+}
+
+async function checkConnectionStatuses() {
+  const plexFallback = { url_configured: true, connected: false, server_name: null };
+  const jellyfinFallback = { url_configured: false, connected: false, server_name: null };
   try {
     const data = await apiGet('/api/status');
-    if (data.connected) {
-      el.className = 'plex-status plex-status--connected';
-      txt.textContent = `Plex Connected (${data.server_name || 'Unknown'})`;
-    } else {
-      el.className = 'plex-status plex-status--error';
-      txt.textContent = 'Not connected';
-    }
+    const plexStatus = data.plex || { ...plexFallback, connected: Boolean(data.connected), server_name: data.server_name };
+    const jellyfinStatus = data.jellyfin || jellyfinFallback;
+
+    setProviderConnectionStatus('Plex', plexStatus, 'plex-status', 'plex-status-text');
+    setProviderConnectionStatus('Jellyfin', jellyfinStatus, 'jellyfin-status', 'jellyfin-status-text');
   } catch {
-    el.className = 'plex-status plex-status--error';
-    txt.textContent = 'Error';
+    setProviderConnectionStatus('Plex', plexFallback, 'plex-status', 'plex-status-text');
+    setProviderConnectionStatus('Jellyfin', jellyfinFallback, 'jellyfin-status', 'jellyfin-status-text');
+    const plexEl = document.getElementById('plex-status');
+    const plexTxt = document.getElementById('plex-status-text');
+    if (plexEl && plexTxt) {
+      plexEl.className = 'plex-status plex-status--error';
+      plexTxt.textContent = 'Error';
+    }
   }
 }
 
