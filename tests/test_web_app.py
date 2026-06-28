@@ -1596,3 +1596,108 @@ class TestApiAuth:
         unauthenticated_client = app.test_client()
         resp = unauthenticated_client.get('/api/settings/runtime')
         assert resp.status_code == 401
+
+
+class TestApiInit:
+    def test_init_returns_200_without_auth(self, app):
+        """GET /api/init is always public."""
+        with app.test_client() as c:
+            resp = c.get('/api/init')
+        assert resp.status_code == 200
+
+    def test_init_token_mode_unauthenticated(self, app):
+        with patch.dict(os.environ, {'DISABLE_AUTH': '', 'AUTH_USERNAME': '', 'AUTH_PASSWORD': ''}):
+            with app.test_client() as c:
+                data = c.get('/api/init').get_json()
+        assert data['auth_required'] is True
+        assert data['authenticated'] is False
+        assert data['auth_mode'] == 'token'
+
+    def test_init_credentials_mode_unauthenticated(self, app):
+        with patch.dict(os.environ, {'DISABLE_AUTH': '', 'AUTH_USERNAME': 'admin', 'AUTH_PASSWORD': 'secret'}):
+            with app.test_client() as c:
+                data = c.get('/api/init').get_json()
+        assert data['auth_required'] is True
+        assert data['authenticated'] is False
+        assert data['auth_mode'] == 'credentials'
+
+    def test_init_disable_auth_mode(self, app):
+        with patch.dict(os.environ, {'DISABLE_AUTH': 'true', 'AUTH_USERNAME': '', 'AUTH_PASSWORD': ''}):
+            with app.test_client() as c:
+                data = c.get('/api/init').get_json()
+        assert data['auth_required'] is False
+        assert data['authenticated'] is True
+        assert data['auth_mode'] == 'disabled'
+
+    def test_init_authenticated_after_session_login(self, app):
+        with patch.dict(os.environ, {'API_AUTH_TOKEN': 'tok', 'DISABLE_AUTH': '', 'AUTH_USERNAME': '', 'AUTH_PASSWORD': ''}):
+            with app.test_client() as c:
+                c.post('/api/auth/login', json={'token': 'tok'})
+                data = c.get('/api/init').get_json()
+        assert data['authenticated'] is True
+
+
+class TestCredentialsLogin:
+    def test_credentials_login_success(self, app):
+        with patch.dict(os.environ, {'AUTH_USERNAME': 'admin', 'AUTH_PASSWORD': 'secret', 'DISABLE_AUTH': ''}):
+            with app.test_client() as c:
+                resp = c.post('/api/auth/login', json={'username': 'admin', 'password': 'secret'})
+        assert resp.status_code == 200
+        assert resp.get_json()['ok'] is True
+        assert resp.get_json()['auth_mode'] == 'credentials'
+
+    def test_credentials_login_wrong_password(self, app):
+        with patch.dict(os.environ, {'AUTH_USERNAME': 'admin', 'AUTH_PASSWORD': 'secret', 'DISABLE_AUTH': ''}):
+            with app.test_client() as c:
+                resp = c.post('/api/auth/login', json={'username': 'admin', 'password': 'wrong'})
+        assert resp.status_code == 401
+
+    def test_credentials_login_wrong_username(self, app):
+        with patch.dict(os.environ, {'AUTH_USERNAME': 'admin', 'AUTH_PASSWORD': 'secret', 'DISABLE_AUTH': ''}):
+            with app.test_client() as c:
+                resp = c.post('/api/auth/login', json={'username': 'hacker', 'password': 'secret'})
+        assert resp.status_code == 401
+
+    def test_credentials_login_empty_fields(self, app):
+        with patch.dict(os.environ, {'AUTH_USERNAME': 'admin', 'AUTH_PASSWORD': 'secret', 'DISABLE_AUTH': ''}):
+            with app.test_client() as c:
+                resp = c.post('/api/auth/login', json={'username': '', 'password': ''})
+        assert resp.status_code == 401
+
+    def test_credentials_login_sets_session(self, app):
+        with patch.dict(os.environ, {'AUTH_USERNAME': 'admin', 'AUTH_PASSWORD': 'secret',
+                                     'DISABLE_AUTH': '', 'API_AUTH_TOKEN': 'tok'}):
+            with app.test_client() as c:
+                c.post('/api/auth/login', json={'username': 'admin', 'password': 'secret'})
+                resp = c.get('/api/settings/runtime')
+        assert resp.status_code == 200
+
+    def test_token_login_rejected_in_credentials_mode(self, app):
+        """Submitting only a token in credentials mode should fail because username/password are required."""
+        with patch.dict(os.environ, {'AUTH_USERNAME': 'admin', 'AUTH_PASSWORD': 'secret',
+                                     'DISABLE_AUTH': '', 'API_AUTH_TOKEN': 'tok'}):
+            with app.test_client() as c:
+                resp = c.post('/api/auth/login', json={'token': 'tok'})
+        assert resp.status_code == 401
+
+
+class TestDisableAuth:
+    def test_disable_auth_allows_mutating_requests(self, app):
+        with patch.dict(os.environ, {'DISABLE_AUTH': 'true'}):
+            with app.test_client() as c:
+                with patch('web_app._kick_off_cache_warmup', return_value=True):
+                    resp = c.post('/api/settings/refresh-cache')
+        assert resp.status_code == 200
+
+    def test_disable_auth_allows_settings_runtime(self, app):
+        with patch.dict(os.environ, {'DISABLE_AUTH': 'true', 'API_AUTH_TOKEN': 'tok'}):
+            with app.test_client() as c:
+                resp = c.get('/api/settings/runtime')
+        assert resp.status_code == 200
+
+    def test_disable_auth_login_establishes_session(self, app):
+        with patch.dict(os.environ, {'DISABLE_AUTH': 'true', 'AUTH_USERNAME': '', 'AUTH_PASSWORD': ''}):
+            with app.test_client() as c:
+                resp = c.post('/api/auth/login', json={})
+        assert resp.status_code == 200
+        assert resp.get_json()['auth_mode'] == 'disabled'

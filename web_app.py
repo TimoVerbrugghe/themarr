@@ -119,6 +119,53 @@ if not (os.getenv('API_AUTH_TOKEN') or '').strip():
     )
     logger.warning('API_AUTH_TOKEN startup token: %s', _generated_api_auth_token)
 
+
+def _auth_disabled():
+    """Return True when DISABLE_AUTH=true (authentication bypass mode)."""
+    return (os.getenv('DISABLE_AUTH') or '').strip().lower() in {'true', '1', 'yes'}
+
+
+def _get_ui_credentials():
+    """Return (username, password) from AUTH_USERNAME / AUTH_PASSWORD env vars."""
+    username = (os.getenv('AUTH_USERNAME') or '').strip()
+    password = (os.getenv('AUTH_PASSWORD') or '').strip()
+    return username, password
+
+
+def _credentials_auth_configured():
+    """Return True when both AUTH_USERNAME and AUTH_PASSWORD are set."""
+    username, password = _get_ui_credentials()
+    return bool(username and password)
+
+
+def _get_auth_mode():
+    """Return the active authentication mode string.
+
+    Returns:
+        'disabled'    – DISABLE_AUTH=true; no credentials required.
+        'credentials' – AUTH_USERNAME + AUTH_PASSWORD are both set; login form shown.
+        'token'       – fallback: API_AUTH_TOKEN (or auto-generated token) login.
+    """
+    if _auth_disabled():
+        return 'disabled'
+    if _credentials_auth_configured():
+        return 'credentials'
+    return 'token'
+
+
+# Log the active auth mode at startup.
+_startup_auth_mode = _get_auth_mode()
+if _startup_auth_mode == 'disabled':
+    logger.warning(
+        'DISABLE_AUTH is set — all UI authentication is bypassed. '
+        'Only use this when a trusted reverse proxy handles authentication.'
+    )
+elif _startup_auth_mode == 'credentials':
+    logger.info('Auth mode: username/password credentials (AUTH_USERNAME + AUTH_PASSWORD).')
+else:
+    logger.info('Auth mode: API token (AUTH_USERNAME/AUTH_PASSWORD not set).')
+
+
 def error_response(message, status_code=500, exc=None):
     """Return a safe JSON error response while logging internal details."""
     if exc is None:
@@ -152,7 +199,10 @@ def _check_api_request_auth():
 
     Accepts either a valid Flask session (established via POST /api/auth/login)
     or the API token supplied in the X-Themarr-Api-Key / Authorization header.
+    When DISABLE_AUTH=true, all requests are allowed without credentials.
     """
+    if _auth_disabled():
+        return None
     if session.get('authenticated'):
         return None
     expected_token, _ = _get_api_auth_token()
@@ -1296,13 +1346,40 @@ def health():
 
 @app.route('/api/auth/login', methods=['POST'])
 def auth_login():
-    """Validate the API token and establish a server-side session.
+    """Validate credentials and establish a server-side session.
 
-    The token is supplied in the JSON body so it is protected by TLS and never
-    appears in query parameters or log lines.  On success the browser receives an
-    httpOnly session cookie; the token is never stored client-side.
+    Accepts either username/password (when AUTH_USERNAME + AUTH_PASSWORD are set)
+    or the API token (``{"token": "..."}`` legacy form for programmatic callers).
+    On success the browser receives an httpOnly session cookie; credentials are
+    never stored client-side.
     """
     data = request.get_json(silent=True) or {}
+    auth_mode = _get_auth_mode()
+
+    if auth_mode == 'disabled':
+        # Auth is disabled — establish a session anyway so downstream
+        # session.get('authenticated') checks remain consistent.
+        session.clear()
+        session['authenticated'] = True
+        return jsonify({'ok': True, 'auth_mode': 'disabled'})
+
+    if auth_mode == 'credentials':
+        provided_username = (data.get('username') or '').strip()
+        provided_password = (data.get('password') or '').strip()
+        expected_username, expected_password = _get_ui_credentials()
+        if not provided_username or not provided_password:
+            return jsonify({'error': 'Invalid username or password'}), 401
+        if len(provided_username) > 256 or len(provided_password) > 4096:
+            return jsonify({'error': 'Invalid username or password'}), 401
+        username_ok = hmac.compare_digest(provided_username, expected_username)
+        password_ok = hmac.compare_digest(provided_password, expected_password)
+        if not (username_ok and password_ok):
+            return jsonify({'error': 'Invalid username or password'}), 401
+        session.clear()
+        session['authenticated'] = True
+        return jsonify({'ok': True, 'auth_mode': 'credentials'})
+
+    # Token mode (default / fallback)
     provided_token = (data.get('token') or '').strip()
     expected_token, is_generated = _get_api_auth_token()
     if not provided_token or not hmac.compare_digest(provided_token, expected_token):
@@ -1311,6 +1388,7 @@ def auth_login():
     session['authenticated'] = True
     return jsonify({
         'ok': True,
+        'auth_mode': 'token',
         'api_auth_token_configured': not is_generated,
         'api_auth_token_generated': is_generated,
     })
@@ -1321,6 +1399,23 @@ def auth_logout():
     """Clear the server-side session."""
     session.clear()
     return jsonify({'ok': True})
+
+
+@app.route('/api/init')
+def api_init():
+    """Return auth state for the UI on initial page load.
+
+    This endpoint is always public — no credentials required — so the frontend
+    can decide whether to show the login screen before making any other requests.
+    """
+    auth_mode = _get_auth_mode()
+    disable_auth = auth_mode == 'disabled'
+    authenticated = disable_auth or session.get('authenticated', False)
+    return jsonify({
+        'auth_required': not disable_auth,
+        'authenticated': authenticated,
+        'auth_mode': auth_mode,
+    })
 
 
 @app.route('/api/settings/runtime')
@@ -1349,8 +1444,8 @@ def enforce_api_auth():
     _ensure_startup_warmup()
     if not request.path.startswith('/api/'):
         return None
-    if request.path == '/api/auth/login':
-        return None  # Login endpoint is always public
+    if request.path in {'/api/auth/login', '/api/init'}:
+        return None  # Always public
     if request.path == '/api/webhooks/plex':
         return None  # Webhook uses its own Basic Auth
     if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
