@@ -304,6 +304,44 @@ class TestGetItemLocalPath:
         assert result is None
 
 
+class TestLocalPathValidation:
+    def test_validate_local_media_path_rejects_traversal(self, monkeypatch, tmp_path):
+        from web_app import _validate_local_media_path
+
+        safe_root = tmp_path / 'tv'
+        safe_root.mkdir()
+        monkeypatch.setenv('TV_SHOWS_HOST_PATH', str(safe_root))
+        monkeypatch.delenv('MOVIES_HOST_PATH', raising=False)
+
+        with pytest.raises(ValueError, match='Invalid local media path'):
+            _validate_local_media_path('../../etc/passwd')
+
+    def test_validate_local_media_path_rejects_outside_media_roots(self, monkeypatch, tmp_path):
+        from web_app import _validate_local_media_path
+
+        safe_root = tmp_path / 'tv'
+        safe_root.mkdir()
+        outside_root = tmp_path / 'other'
+        outside_root.mkdir()
+        monkeypatch.setenv('TV_SHOWS_HOST_PATH', str(safe_root))
+        monkeypatch.delenv('MOVIES_HOST_PATH', raising=False)
+
+        with pytest.raises(ValueError, match='outside configured media roots'):
+            _validate_local_media_path(outside_root / 'show')
+
+    def test_provider_theme_rejects_path_outside_media_roots(self, client, monkeypatch, tmp_path):
+        safe_root = tmp_path / 'tv'
+        safe_root.mkdir()
+        monkeypatch.setenv('TV_SHOWS_HOST_PATH', str(safe_root))
+        monkeypatch.delenv('MOVIES_HOST_PATH', raising=False)
+
+        with patch('web_app._get_item_context', return_value={'local_path': Path('/etc')}):
+            resp = client.get('/api/items/jellyfin/abc/theme')
+
+        assert resp.status_code == 400
+        assert resp.get_json()['error'] == 'Invalid provider or item identifier'
+
+
 class TestThemeDownload:
     def test_download_theme_success(self, client, mock_plex, tmp_path):
         show_dir = tmp_path / 'Test Show (2020)'
