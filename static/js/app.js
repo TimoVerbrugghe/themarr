@@ -7,16 +7,19 @@
 // ============================================================
 const ICON_PLEX = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M11.916 0C5.333 0 0 5.333 0 11.916s5.333 11.916 11.916 11.916 11.916-5.333 11.916-11.916S18.499 0 11.916 0zm1.501 16.14L9.143 12l4.274-4.14 1.263.865-3.25 3.275 3.25 3.275z"/></svg>`;
 const ICON_YOUTUBE = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>`;
+const ICON_THEMERRDB = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/></svg>`;
 const ICON_UPLOAD = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>`;
 const ICON_PLAY = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>`;
 const ICON_PAUSE = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`;
 const ICON_COPY = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1zm4 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h12v14z"/></svg>`;
 
 // Action button label HTML: [icon, grid-label, list-label]
-const BTN_PLEX    = [ICON_PLEX,    `${ICON_PLEX} Plex`,    `${ICON_PLEX} Download from Plex`];
-const BTN_COPY    = [ICON_COPY,    `${ICON_COPY} Copy Theme`, `${ICON_COPY} Copy theme from…`];
-const BTN_YOUTUBE = [ICON_YOUTUBE, `${ICON_YOUTUBE} YouTube`, `${ICON_YOUTUBE} Download from YouTube`];
-const BTN_UPLOAD  = [ICON_UPLOAD,  `${ICON_UPLOAD} Upload`, `${ICON_UPLOAD} Upload custom theme`];
+const BTN_PLEX      = [ICON_PLEX,      `${ICON_PLEX} Plex`,       `${ICON_PLEX} Download from Plex`];
+const BTN_COPY      = [ICON_COPY,      `${ICON_COPY} Copy Theme`, `${ICON_COPY} Copy theme from…`];
+const BTN_YOUTUBE   = [ICON_YOUTUBE,   `${ICON_YOUTUBE} YouTube`, `${ICON_YOUTUBE} Download from YouTube`];
+const BTN_THEMERRDB = [ICON_THEMERRDB, `${ICON_THEMERRDB} ThemerrDB`, `${ICON_THEMERRDB} Download from ThemerrDB`];
+const BTN_UPLOAD    = [ICON_UPLOAD,    `${ICON_UPLOAD} Upload`,   `${ICON_UPLOAD} Upload custom theme`];
+
 
 // Capture server-rendered defaults before JS mutates the DOM
 const SERVER_DEFAULT_THEME = document.documentElement.dataset.theme || 'dark';
@@ -78,6 +81,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.getElementById('youtube-overwrite-check').addEventListener('change', () => {
     _syncOverwriteActionButton('btn-confirm-youtube', 'youtube-overwrite-check');
+  });
+  document.getElementById('themerrdb-overwrite-check').addEventListener('change', () => {
+    _syncOverwriteActionButton('btn-confirm-themerrdb', 'themerrdb-overwrite-check');
   });
   document.getElementById('copy-overwrite-check').addEventListener('change', () => {
     syncCopyThemeConfirmButton();
@@ -389,11 +395,16 @@ function createItemCard(item) {
   const actions = document.createElement('div');
   actions.className = 'item-actions';
 
-  // Button order: Download from Plex → YouTube → Copy theme from → Upload → Delete
+  // Button order: Download from Plex → ThemerrDB → YouTube → Copy theme from → Upload → Delete
   const downloadButton = createActionButton('action-btn action-btn-download', 'Download from Plex', BTN_PLEX[1]);
   downloadButton.disabled = !item.has_plex_theme;
   downloadButton.addEventListener('click', () => openDownloadModal(item.ratingKey, item.title, item.has_local_theme, item.has_plex_theme));
   actions.appendChild(downloadButton);
+
+  const themerrdbButton = createActionButton('action-btn action-btn-themerrdb', 'Download from ThemerrDB', BTN_THEMERRDB[1]);
+  themerrdbButton.disabled = !item.has_themerrdb_theme;
+  themerrdbButton.addEventListener('click', () => openThemerrdbModal(item.ratingKey, item.title, item.has_local_theme));
+  actions.appendChild(themerrdbButton);
 
   const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', BTN_YOUTUBE[1]);
   youtubeButton.addEventListener('click', () => openYoutubeModal(item.ratingKey, item.title, item.has_local_theme));
@@ -512,7 +523,7 @@ function createItemRow(item) {
   }
   actionMenu.addEventListener('click', (e) => e.stopPropagation());
 
-  // Button order: Download from Plex → YouTube → Copy theme from → Upload → Delete
+  // Button order: Download from Plex → ThemerrDB → YouTube → Copy theme from → Upload → Delete
   const downloadButton = createActionButton('action-btn action-btn-download', 'Download from Plex', BTN_PLEX[2]);
   downloadButton.disabled = !item.has_plex_theme;
   downloadButton.addEventListener('click', () => {
@@ -520,6 +531,14 @@ function createItemRow(item) {
     openDownloadModal(item.ratingKey, item.title, item.has_local_theme, item.has_plex_theme);
   });
   actionMenu.appendChild(downloadButton);
+
+  const themerrdbButton = createActionButton('action-btn action-btn-themerrdb', 'Download from ThemerrDB', BTN_THEMERRDB[2]);
+  themerrdbButton.disabled = !item.has_themerrdb_theme;
+  themerrdbButton.addEventListener('click', () => {
+    closeAllRowActionMenus();
+    openThemerrdbModal(item.ratingKey, item.title, item.has_local_theme);
+  });
+  actionMenu.appendChild(themerrdbButton);
 
   const youtubeButton = createActionButton('action-btn action-btn-youtube', 'Download from YouTube', BTN_YOUTUBE[2]);
   youtubeButton.addEventListener('click', () => {
@@ -871,6 +890,56 @@ async function confirmDownload() {
     btn.textContent = 'Download';
   }
 }
+
+
+// ============================================================
+// ThemerrDB Modal
+// ============================================================
+async function openThemerrdbModal(ratingKey, title, hasLocalTheme) {
+  activeItemKey = ratingKey;
+  document.getElementById('themerrdb-item-title').textContent = title;
+
+  const overwriteDiv = document.getElementById('modal-themerrdb-overwrite');
+  if (hasLocalTheme) {
+    overwriteDiv.classList.remove('hidden');
+    document.getElementById('themerrdb-overwrite-check').checked = false;
+  } else {
+    overwriteDiv.classList.add('hidden');
+  }
+
+  const previewContainer = document.getElementById('themerrdb-preview-container');
+  previewContainer.innerHTML = '<p class="muted">Loading preview…</p>';
+
+  openModal('modal-themerrdb');
+  _syncOverwriteActionButton('btn-confirm-themerrdb', 'themerrdb-overwrite-check');
+
+  try {
+    const response = await fetch(`/api/items/${ratingKey}/theme/themerrdb/check`);
+    const result = await response.json();
+
+    if (!response.ok || !result.available) {
+      previewContainer.innerHTML = '<p class="error">Theme not available in ThemerrDB</p>';
+      document.getElementById('btn-confirm-themerrdb').disabled = true;
+      return;
+    }
+
+    // Show preview player
+    previewContainer.innerHTML = `
+      <div class="preview-player">
+        <audio controls style="width: 100%;">
+          <source src="/api/items/${ratingKey}/theme/themerrdb/preview" type="audio/mpeg">
+          Your browser does not support the audio element.
+        </audio>
+      </div>
+    `;
+    document.getElementById('btn-confirm-themerrdb').disabled = false;
+  } catch (err) {
+    previewContainer.innerHTML = `<p class="error">Failed to load theme preview: ${err}</p>`;
+    document.getElementById('btn-confirm-themerrdb').disabled = true;
+    showToast('error', `Failed to load ThemerrDB preview: ${err}`);
+  }
+}
+
 
 // ============================================================
 // Copy Theme Modal
@@ -1272,6 +1341,43 @@ async function confirmYoutube() {
   } catch (err) {
     progressEl.classList.add('hidden');
     showToast('error', String(err));
+  }
+}
+
+async function confirmThemerrdb() {
+  const overwrite = document.getElementById('themerrdb-overwrite-check').checked;
+  const progressEl = document.getElementById('themerrdb-progress');
+  const btn = document.getElementById('btn-confirm-themerrdb');
+  progressEl.classList.remove('hidden');
+  btn.disabled = true;
+
+  try {
+    const resp = await fetch(`/api/items/${activeItemKey}/theme/themerrdb`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ overwrite }),
+    });
+    const data = await resp.json();
+    progressEl.classList.add('hidden');
+
+    if (!resp.ok) {
+      showToast('error', data.error || 'ThemerrDB download failed');
+    } else if (data.error && data.exists) {
+      showToast('info', 'Theme already exists. Enable overwrite to replace it.');
+    } else if (data.success) {
+      showToast('success', 'ThemerrDB theme downloaded successfully!');
+      closeModal('modal-themerrdb');
+      if (!applyServerItemUpdate(data.item)) {
+        await refreshItem(activeItemKey);
+      }
+    } else {
+      showToast('error', data.error || 'ThemerrDB download failed');
+    }
+  } catch (err) {
+    progressEl.classList.add('hidden');
+    showToast('error', String(err));
+  } finally {
+    btn.disabled = false;
   }
 }
 

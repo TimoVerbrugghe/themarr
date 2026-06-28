@@ -29,6 +29,8 @@ MAX_BULK_ITEMS = 100
 ASSET_VERSION = str(int(time.time()))
 ALLOWED_UPLOAD_TYPES = {'audio/mpeg', 'audio/mp3', 'application/octet-stream'}
 ALLOWED_YOUTUBE_HOSTS = {'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'}
+THEMERRDB_API_BASE = 'https://app.lizardbyte.dev/ThemerrDB'
+THEMERRDB_CACHE_TTL = 24 * 3600  # 24 hours
 
 # In-memory cache for library items, warmed at startup to make first page loads instant.
 _library_cache: dict = {}        # {section_id: [item_dict, ...]}
@@ -37,6 +39,8 @@ _section_build_locks: dict = {}  # {section_id: threading.Lock()}
 _section_build_locks_lock = threading.Lock()
 _poster_cache: dict = {}         # {rating_key: {'content': bytes, 'content_type': str}}
 _poster_cache_lock = threading.Lock()
+_themerrdb_cache: dict = {}      # {cache_key: {'data': dict, 'timestamp': float}}
+_themerrdb_cache_lock = threading.Lock()
 _theme_hydration_status = {
     'running': False,
     'ready': True,
@@ -68,6 +72,104 @@ def plex_session_get(plex, url, **kwargs):
     # plexapi does not expose a higher-level helper for arbitrary media proxying,
     # so these web endpoints intentionally reuse its authenticated requests session.
     return plex._session.get(url, **kwargs)
+
+
+def extract_external_ids(item):
+    """Extract external IDs (IMDB/TVDB) from Plex item guids.
+    
+    Returns dict with 'imdb' and 'tvdb' keys (None if not found).
+    """
+    ids = {'imdb': None, 'tvdb': None}
+    for guid in getattr(item, 'guids', []):
+        guid_id = guid.get('id', '')
+        if guid_id.startswith('imdb://'):
+            ids['imdb'] = guid_id.replace('imdb://', '')
+        elif guid_id.startswith('tvdb://'):
+            ids['tvdb'] = guid_id.replace('tvdb://', '')
+    return ids
+
+
+def _get_themerrdb_cache_key(external_id):
+    """Generate cache key for ThemerrDB query."""
+    return f'themerrdb_{external_id}'
+
+
+def _get_cached_themerrdb(external_id):
+    """Return cached ThemerrDB data if available and fresh."""
+    cache_key = _get_themerrdb_cache_key(external_id)
+    with _themerrdb_cache_lock:
+        cached = _themerrdb_cache.get(cache_key)
+        if cached and time.time() - cached['timestamp'] < THEMERRDB_CACHE_TTL:
+            return cached['data']
+    return None
+
+
+def _set_cached_themerrdb(external_id, data):
+    """Cache ThemerrDB response."""
+    cache_key = _get_themerrdb_cache_key(external_id)
+    with _themerrdb_cache_lock:
+        _themerrdb_cache[cache_key] = {
+            'data': data,
+            'timestamp': time.time(),
+        }
+
+
+def query_themerrdb(item_type, database, external_id):
+    """Query ThemerrDB API for theme availability.
+    
+    Args:
+        item_type: 'movies' or 'tv_shows'
+        database: 'imdb' or 'themoviedb'
+        external_id: the IMDB/TVDB ID
+    
+    Returns:
+        Theme metadata dict (with 'youtube_theme_url' key) or None if not found.
+    """
+    if not external_id:
+        return None
+    
+    # Check cache first
+    cached = _get_cached_themerrdb(external_id)
+    if cached is not None:
+        return cached
+    
+    try:
+        url = f'{THEMERRDB_API_BASE}/{item_type}/{database}/{external_id}.json'
+        logger.info(f'Querying ThemerrDB: {url}')
+        response = http_requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            _set_cached_themerrdb(external_id, data)
+            return data
+        elif response.status_code == 404:
+            logger.info(f'Theme not found in ThemerrDB: {url}')
+            _set_cached_themerrdb(external_id, None)
+            return None
+        else:
+            logger.warning(f'ThemerrDB query failed with status {response.status_code}: {url}')
+            return None
+    except Exception as exc:
+        logger.error(f'Error querying ThemerrDB: {exc}')
+        return None
+
+
+def get_themerrdb_theme(item):
+    """Get ThemerrDB theme data for a Plex item if available.
+    
+    Returns theme metadata dict or None if not available.
+    """
+    item_type = 'tv_shows' if item.type == 'show' else 'movies'
+    ids = extract_external_ids(item)
+    
+    # Try IMDB first (more reliable), then TVDB
+    for database, external_id in [('imdb', ids['imdb']), ('themoviedb', ids['tvdb'])]:
+        if external_id:
+            theme_data = query_themerrdb(item_type, database, external_id)
+            if theme_data:
+                return theme_data
+    
+    return None
 
 
 def scan_local_theme_dirs(base_paths):
@@ -270,6 +372,13 @@ def item_to_dict(item, theme_dirs=None):
                 theme_exists = True
                 theme_size = theme_path.stat().st_size
 
+    # Extract external IDs for ThemerrDB availability check
+    external_ids = extract_external_ids(item)
+    has_themerrdb_theme = False
+    if external_ids['imdb'] or external_ids['tvdb']:
+        themerrdb_data = get_themerrdb_theme(item)
+        has_themerrdb_theme = themerrdb_data is not None
+
     return {
         'ratingKey': item.ratingKey,
         'title': item.title,
@@ -278,9 +387,12 @@ def item_to_dict(item, theme_dirs=None):
         'type': item.type,
         'has_plex_theme': bool(getattr(item, 'theme', None)),
         'has_local_theme': theme_exists,
+        'has_themerrdb_theme': has_themerrdb_theme,
         'theme_size': theme_size,
         'local_path': str(local_path) if local_path else None,
+        'external_ids': external_ids,
     }
+
 
 
 # ============================================================
@@ -990,6 +1102,127 @@ def download_from_youtube(rating_key):
         return jsonify({'error': msg}), 500
     except Exception as exc:
         return error_response(f'Failed YouTube download for {rating_key}', exc=exc)
+
+
+@app.route('/api/items/<int:rating_key>/theme/themerrdb/check', methods=['GET'])
+def check_themerrdb_availability(rating_key):
+    """Check if a theme is available in ThemerrDB for an item."""
+    try:
+        plex = get_plex()
+        item = plex.fetchItem(rating_key)
+        
+        themerrdb_data = get_themerrdb_theme(item)
+        if themerrdb_data:
+            return jsonify({
+                'available': True,
+                'youtube_url': themerrdb_data.get('youtube_theme_url'),
+            })
+        else:
+            return jsonify({'available': False})
+    except Exception as exc:
+        return error_response(f'Failed to check ThemerrDB availability for {rating_key}', exc=exc)
+
+
+@app.route('/api/items/<int:rating_key>/theme/themerrdb/preview', methods=['GET'])
+def preview_themerrdb_theme(rating_key):
+    """Stream a theme preview from ThemerrDB via YouTube URL."""
+    try:
+        plex = get_plex()
+        item = plex.fetchItem(rating_key)
+        
+        themerrdb_data = get_themerrdb_theme(item)
+        if not themerrdb_data or not themerrdb_data.get('youtube_theme_url'):
+            return jsonify({'error': 'No theme available in ThemerrDB'}), 404
+        
+        youtube_url = themerrdb_data['youtube_theme_url']
+        
+        try:
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'quiet': True,
+                'no_warnings': True,
+                'noplaylist': True,
+                'skip_download': True,
+                'socket_timeout': 30,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(youtube_url, download=False)
+                audio_url = info.get('url')
+                if not audio_url:
+                    return jsonify({'error': 'Could not extract audio from YouTube'}), 500
+            
+            response = http_requests.get(audio_url, stream=True, timeout=30)
+            response.raise_for_status()
+            return Response(
+                response.iter_content(chunk_size=8192),
+                mimetype='audio/mpeg',
+                headers={'Cache-Control': 'no-cache'},
+            )
+        except Exception as exc:
+            logger.error('Failed to stream ThemerrDB theme preview: %s', exc)
+            return error_response('Failed to stream theme preview', exc=exc)
+    except Exception as exc:
+        return error_response(f'Failed to preview ThemerrDB theme for {rating_key}', exc=exc)
+
+
+@app.route('/api/items/<int:rating_key>/theme/themerrdb', methods=['POST'])
+def download_from_themerrdb(rating_key):
+    """Download theme from ThemerrDB and save as theme.mp3."""
+    try:
+        data = request.get_json(silent=True) or {}
+        overwrite = data.get('overwrite', False)
+        
+        plex = get_plex()
+        item = plex.fetchItem(rating_key)
+        
+        local_path = get_item_local_path(item)
+        if not local_path:
+            return jsonify({'error': 'Cannot determine local path for item'}), 404
+        
+        theme_path = local_path / 'theme.mp3'
+        
+        if theme_path.exists() and theme_path.stat().st_size > 0 and not overwrite:
+            return jsonify({'error': 'Theme already exists', 'exists': True}), 409
+        
+        themerrdb_data = get_themerrdb_theme(item)
+        if not themerrdb_data or not themerrdb_data.get('youtube_theme_url'):
+            return jsonify({'error': 'No theme available in ThemerrDB'}), 404
+        
+        youtube_url = themerrdb_data['youtube_theme_url']
+        
+        with tempfile.TemporaryDirectory(dir=YTDLP_WORKDIR) as tmpdir:
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'outtmpl': os.path.join(tmpdir, 'theme.%(ext)s'),
+                'quiet': True,
+                'no_warnings': True,
+                'noplaylist': True,
+                'match_filter': youtube_match_filter,
+                'max_filesize': MAX_UPLOAD_BYTES,
+                'js_runtimes': {'node': {}},
+                'remote_components': ['ejs:github'],
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([youtube_url])
+            
+            mp3_files = list(Path(tmpdir).glob('*.mp3'))
+            if not mp3_files:
+                return jsonify({'error': 'Download failed: no MP3 file produced'}), 500
+            
+            local_path.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(mp3_files[0]), str(theme_path))
+        
+        logger.info('Downloaded ThemerrDB theme for %s to %s', item.title, theme_path)
+        send_pushover_notification('Theme Downloaded', f'{item.title} theme downloaded from ThemerrDB')
+        item_dict, _ = _sync_cached_item(item)
+        return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
+    except Exception as exc:
+        return error_response(f'Failed to download ThemerrDB theme for {rating_key}', exc=exc)
 
 
 @app.route('/api/items/<int:rating_key>/theme', methods=['DELETE'])

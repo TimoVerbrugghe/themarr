@@ -328,6 +328,40 @@
     </div>
   </div>
 
+  <!-- ThemerrDB modal -->
+  <div id="modal-themerrdb" class="modal-overlay hidden" onclick="closeModal('modal-themerrdb', event)">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3>Download from ThemerrDB</h3>
+        <button class="modal-close" onclick="closeModal('modal-themerrdb')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>Theme preview for <strong id="themerrdb-item-title"></strong>:</p>
+        <div id="themerrdb-preview-container" class="preview-container"></div>
+
+        <div id="modal-themerrdb-overwrite" class="overwrite-warning hidden">
+          <div class="warning-box">
+            <span>⚠️</span>
+            <span>A theme already exists. Check "Overwrite" to replace it.</span>
+          </div>
+          <label class="checkbox-label">
+            <input type="checkbox" id="themerrdb-overwrite-check">
+            Overwrite existing theme
+          </label>
+        </div>
+
+        <div id="themerrdb-progress" class="progress-area hidden">
+          <div class="spinner"></div>
+          <span>Downloading and saving theme…</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('modal-themerrdb')">Cancel</button>
+        <button id="btn-confirm-themerrdb" class="btn btn-primary" onclick="confirmThemerrdb()">Download</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Delete confirmation modal -->
   <div id="modal-delete" class="modal-overlay hidden" onclick="closeModal('modal-delete', event)">
     <div class="modal modal-sm">
