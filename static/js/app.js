@@ -528,9 +528,6 @@ async function selectLibrary(provider, id, title) {
   document.getElementById('items-grid').innerHTML = '';
   document.getElementById('search-input').value = '';
 
-  document.querySelectorAll('.filter-buttons .btn').forEach((button) => button.classList.remove('active'));
-  document.getElementById('filter-all').classList.add('active');
-
   // Clear selection when switching libraries
   selectedItems.clear();
   updateBulkBar();
