@@ -88,10 +88,10 @@ volumes:
 | `FLASK_DEBUG` | No | `false` | Enables Flask debug mode |
 | `DEFAULT_THEME` | No | `dark` | Default UI theme: `dark` or `light` |
 | `DEFAULT_VIEW` | No | `list` | Default library view: `list` or `grid` |
-| `AUTH_USERNAME` | No | — | Username for the login screen. Set together with `AUTH_PASSWORD` to enable credential-based authentication. |
-| `AUTH_PASSWORD` | No | — | Password for the login screen (used with `AUTH_USERNAME`). |
+| `AUTH_USERNAME` | No | — | Username for the login screen. Set together with `AUTH_PASSWORD` when `DISABLE_AUTH=false`. |
+| `AUTH_PASSWORD` | No | — | Password for the login screen (used with `AUTH_USERNAME` when `DISABLE_AUTH=false`). |
 | `DISABLE_AUTH` | No | `false` | Set to `true` to disable all UI authentication. Only use this when a trusted reverse proxy already handles auth (see [Disable auth](#disable-auth-reverse-proxy)). |
-| `API_AUTH_TOKEN` | No | auto-generated | Token for programmatic/webhook API access. If unset, Themarr generates one at startup and logs it. See the Settings page to authenticate. |
+| `API_AUTH_TOKEN` | No | auto-generated | Token for programmatic/webhook API access. If unset, Themarr generates one at startup and logs it. |
 | `FLASK_SECRET_KEY` | No | auto-generated | Secret used to sign the browser session cookie. Set a stable value to keep sessions across container restarts. |
 | `WEBHOOK_USERNAME` | No | — | Optional Basic Auth username for Plex webhook endpoint |
 | `WEBHOOK_PASSWORD` | No | — | Optional Basic Auth password for Plex webhook endpoint |
@@ -102,7 +102,7 @@ volumes:
 
 ## Authentication
 
-Themarr supports three authentication modes, similar to Sonarr/Radarr:
+Themarr has two Web UI authentication modes plus always-on API token support:
 
 ### Credentials (recommended)
 
@@ -114,15 +114,13 @@ AUTH_USERNAME=admin
 AUTH_PASSWORD=yourpassword
 ```
 
-### API token (legacy / headless)
+### Missing credentials while auth is enabled
 
-If `AUTH_USERNAME` / `AUTH_PASSWORD` are not set, Themarr falls back to API token authentication.  
-Go to **Settings → Runtime Security & Limits**, paste the token from the startup logs, and click **Login**.
+If `DISABLE_AUTH=false` and either `AUTH_USERNAME` or `AUTH_PASSWORD` is missing, the Web UI only shows a warning page until both are set.
 
-```env
-API_AUTH_TOKEN=          # leave blank to auto-generate
-```
+### API token (automation)
 
+`API_AUTH_TOKEN` is independent from UI auth mode and is intended for scripts, API clients, and webhook callers.
 If `API_AUTH_TOKEN` is not set, Themarr generates a token at startup and logs it:
 
 ```bash

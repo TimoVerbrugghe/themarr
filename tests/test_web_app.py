@@ -187,11 +187,11 @@ class TestSettingsRuntime:
 
     def test_runtime_settings_accessible_via_session(self, app):
         import web_app
-        with patch.dict(os.environ, {'API_AUTH_TOKEN': 'sess-token'}):
+        with patch.dict(os.environ, {'API_AUTH_TOKEN': 'sess-token', 'AUTH_USERNAME': 'admin', 'AUTH_PASSWORD': 'secret'}):
             with app.test_client() as session_client:
                 login_resp = session_client.post(
                     '/api/auth/login',
-                    json={'token': 'sess-token'},
+                    json={'username': 'admin', 'password': 'secret'},
                     content_type='application/json',
                 )
                 assert login_resp.status_code == 200
@@ -201,42 +201,29 @@ class TestSettingsRuntime:
 
 
 class TestAuthLogin:
-    def test_login_with_valid_token_returns_200(self, app):
-        with patch.dict(os.environ, {'API_AUTH_TOKEN': 'my-token'}):
-            with app.test_client() as c:
-                resp = c.post('/api/auth/login', json={'token': 'my-token'})
-        assert resp.status_code == 200
-        assert resp.get_json()['ok'] is True
-
-    def test_login_with_invalid_token_returns_401(self, app):
-        with patch.dict(os.environ, {'API_AUTH_TOKEN': 'correct-token'}):
-            with app.test_client() as c:
-                resp = c.post('/api/auth/login', json={'token': 'wrong-token'})
-        assert resp.status_code == 401
-
-    def test_login_with_empty_token_returns_401(self, app):
+    def test_login_with_missing_credentials_mode_returns_503(self, app):
         with app.test_client() as c:
-            resp = c.post('/api/auth/login', json={'token': ''})
-        assert resp.status_code == 401
+            resp = c.post('/api/auth/login', json={})
+        assert resp.status_code == 503
 
-    def test_login_with_missing_body_returns_401(self, app):
+    def test_login_with_missing_body_returns_503(self, app):
         with app.test_client() as c:
             resp = c.post('/api/auth/login')
-        assert resp.status_code == 401
+        assert resp.status_code == 503
 
     def test_login_sets_session_that_authenticates_runtime_endpoint(self, app):
-        with patch.dict(os.environ, {'API_AUTH_TOKEN': 'sess-test-token'}):
+        with patch.dict(os.environ, {'AUTH_USERNAME': 'admin', 'AUTH_PASSWORD': 'secret'}):
             with app.test_client() as c:
-                c.post('/api/auth/login', json={'token': 'sess-test-token'})
+                c.post('/api/auth/login', json={'username': 'admin', 'password': 'secret'})
                 resp = c.get('/api/settings/runtime')
         assert resp.status_code == 200
 
 
 class TestAuthLogout:
     def test_logout_clears_session(self, app):
-        with patch.dict(os.environ, {'API_AUTH_TOKEN': 'logout-token'}):
+        with patch.dict(os.environ, {'AUTH_USERNAME': 'admin', 'AUTH_PASSWORD': 'secret', 'API_AUTH_TOKEN': 'logout-token'}):
             with app.test_client() as c:
-                c.post('/api/auth/login', json={'token': 'logout-token'})
+                c.post('/api/auth/login', json={'username': 'admin', 'password': 'secret'})
                 # Confirm authenticated
                 assert c.get('/api/settings/runtime').status_code == 200
                 # Logout
@@ -1228,12 +1215,20 @@ class TestPosterCache:
 
 class TestIndexPage:
     def test_index_loads(self, client):
-        resp = client.get('/')
+        with patch.dict(os.environ, {'AUTH_USERNAME': 'admin', 'AUTH_PASSWORD': 'secret', 'DISABLE_AUTH': ''}):
+            resp = client.get('/')
         assert resp.status_code == 200
         assert b'Themarr' in resp.data
         assert b'id="library-nav"' in resp.data
         assert b'id="items-grid"' in resp.data
         assert b'/static/js/app.js' in resp.data
+
+    def test_index_shows_warning_when_auth_credentials_missing(self, client):
+        with patch.dict(os.environ, {'AUTH_USERNAME': '', 'AUTH_PASSWORD': '', 'DISABLE_AUTH': ''}):
+            resp = client.get('/')
+        assert resp.status_code == 200
+        assert b'Web UI authentication is not configured' in resp.data
+        assert b'/static/js/app.js' not in resp.data
 
 
 # ============================================================
@@ -1605,13 +1600,14 @@ class TestApiInit:
             resp = c.get('/api/init')
         assert resp.status_code == 200
 
-    def test_init_token_mode_unauthenticated(self, app):
+    def test_init_misconfigured_mode_unauthenticated(self, app):
         with patch.dict(os.environ, {'DISABLE_AUTH': '', 'AUTH_USERNAME': '', 'AUTH_PASSWORD': ''}):
             with app.test_client() as c:
                 data = c.get('/api/init').get_json()
-        assert data['auth_required'] is True
+        assert data['auth_required'] is False
         assert data['authenticated'] is False
-        assert data['auth_mode'] == 'token'
+        assert data['auth_mode'] == 'misconfigured'
+        assert data['auth_misconfigured'] is True
 
     def test_init_credentials_mode_unauthenticated(self, app):
         with patch.dict(os.environ, {'DISABLE_AUTH': '', 'AUTH_USERNAME': 'admin', 'AUTH_PASSWORD': 'secret'}):
@@ -1630,9 +1626,9 @@ class TestApiInit:
         assert data['auth_mode'] == 'disabled'
 
     def test_init_authenticated_after_session_login(self, app):
-        with patch.dict(os.environ, {'API_AUTH_TOKEN': 'tok', 'DISABLE_AUTH': '', 'AUTH_USERNAME': '', 'AUTH_PASSWORD': ''}):
+        with patch.dict(os.environ, {'DISABLE_AUTH': '', 'AUTH_USERNAME': 'admin', 'AUTH_PASSWORD': 'secret'}):
             with app.test_client() as c:
-                c.post('/api/auth/login', json={'token': 'tok'})
+                c.post('/api/auth/login', json={'username': 'admin', 'password': 'secret'})
                 data = c.get('/api/init').get_json()
         assert data['authenticated'] is True
 

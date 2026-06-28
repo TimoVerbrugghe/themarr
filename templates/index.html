@@ -8,6 +8,20 @@
   <link rel="stylesheet" href="/static/css/style.css?v={{ asset_version }}">
 </head>
 <body>
+  {% if ui_auth_misconfigured %}
+  <div class="login-overlay">
+    <div class="login-card">
+      <div class="login-logo">
+        <img src="/static/logo-themarr.svg?v={{ asset_version }}" alt="Themarr" class="login-logo-img">
+      </div>
+      <h2 class="login-title">Web UI authentication is not configured</h2>
+      <p class="text-muted">{{ ui_auth_warning_message }}</p>
+      <div class="settings-action-result success" style="display:block; margin-top:1rem;">
+        API token creation and API token-based automation remain available via <code>API_AUTH_TOKEN</code>.
+      </div>
+    </div>
+  </div>
+  {% else %}
   <!-- Header -->
   <header class="header">
     <div class="header-inner">
@@ -46,16 +60,6 @@
         <button type="submit" id="login-submit-btn" class="btn btn-primary login-btn">Sign in</button>
       </form>
 
-      <!-- Token mode (API_AUTH_TOKEN / legacy) -->
-      <form id="login-form-token" class="login-form hidden" onsubmit="loginWithApiTokenForm(event)">
-        <div class="login-field">
-          <label class="login-label" for="login-token-input">API token</label>
-          <input id="login-token-input" type="password" class="login-input" placeholder="Paste token from server logs…" autocomplete="off" autofocus required>
-        </div>
-        <p class="login-hint">Find the token in the container logs:<br><code>docker logs &lt;container&gt; 2&gt;&amp;1 | grep "startup token"</code></p>
-        <div id="login-error-token" class="login-error hidden"></div>
-        <button type="submit" id="login-token-submit-btn" class="btn btn-primary login-btn">Sign in</button>
-      </form>
     </div>
   </div>
 
@@ -222,10 +226,7 @@
                   <code id="runtime-api-token">Loading…</code>
                   <button class="btn btn-secondary btn-sm" type="button" onclick="copyApiToken()">Copy</button>
                   <div id="runtime-api-token-source">Loading…</div>
-                  <div style="margin-top:0.5rem; display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
-                    <input id="api-token-input" type="password" placeholder="Paste token from server logs…"
-                           style="flex:1; min-width:14rem; font-family:monospace; font-size:0.85rem;" autocomplete="off" />
-                    <button class="btn btn-primary btn-sm" type="button" onclick="loginWithApiToken()">Login</button>
+                  <div style="margin-top:0.5rem;">
                     <button class="btn btn-secondary btn-sm" type="button" onclick="logoutSession()">Logout</button>
                   </div>
                 </td>
@@ -554,5 +555,6 @@
   <div id="toast-container" class="toast-container"></div>
 
   <script src="/static/js/app.js?v={{ asset_version }}"></script>
+  {% endif %}
 </body>
 </html>

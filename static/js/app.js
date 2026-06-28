@@ -47,8 +47,9 @@ const ACTION_MENU_COLLAPSE_BREAKPOINT = 1200;
 // API token is kept in memory only; it is never written to localStorage.
 // The server returns it from the authenticated GET /api/settings/runtime endpoint.
 let apiAuthToken = '';
-// Auth mode reported by /api/init: 'disabled' | 'credentials' | 'token'
-let appAuthMode = 'token';
+// Auth mode reported by /api/init: 'disabled' | 'credentials' | 'misconfigured'
+let appAuthMode = 'misconfigured';
+const NOT_AUTHENTICATED_TEXT = 'Not authenticated';
 // Remove any token previously stored in localStorage by older versions of this app.
 try { localStorage.removeItem('themarr-api-token'); } catch (_) { /* ignore */ }
 
@@ -75,18 +76,10 @@ function showLoginOverlay(authMode) {
   const overlay = document.getElementById('login-overlay');
   if (!overlay) return;
   overlay.classList.remove('hidden');
-  // Show the correct form variant
   const credForm = document.getElementById('login-form-credentials');
-  const tokenForm = document.getElementById('login-form-token');
-  if (authMode === 'credentials') {
-    credForm && credForm.classList.remove('hidden');
-    tokenForm && tokenForm.classList.add('hidden');
-    document.getElementById('login-username') && document.getElementById('login-username').focus();
-  } else {
-    credForm && credForm.classList.add('hidden');
-    tokenForm && tokenForm.classList.remove('hidden');
-    document.getElementById('login-token-input') && document.getElementById('login-token-input').focus();
-  }
+  credForm && credForm.classList.remove('hidden');
+  setLoginError('credentials', '');
+  document.getElementById('login-username') && document.getElementById('login-username').focus();
 }
 
 function hideLoginOverlay() {
@@ -95,7 +88,7 @@ function hideLoginOverlay() {
 }
 
 function setLoginError(formType, msg) {
-  const elId = formType === 'credentials' ? 'login-error' : 'login-error-token';
+  const elId = 'login-error';
   const el = document.getElementById(elId);
   if (!el) return;
   if (msg) {
@@ -140,39 +133,6 @@ async function loginWithCredentials(event) {
   }
 }
 
-async function loginWithApiTokenForm(event) {
-  if (event) event.preventDefault();
-  const inputEl = document.getElementById('login-token-input');
-  const submitBtn = document.getElementById('login-token-submit-btn');
-  const newToken = (inputEl ? inputEl.value : '').trim();
-  setLoginError('token', '');
-  if (!newToken) {
-    setLoginError('token', 'Token cannot be empty.');
-    return;
-  }
-  if (submitBtn) submitBtn.disabled = true;
-  try {
-    const resp = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: newToken }),
-    });
-    if (!resp.ok) {
-      const err = (await resp.json().catch(() => ({}))).error || 'Invalid token';
-      setLoginError('token', err);
-      return;
-    }
-    if (inputEl) inputEl.value = '';
-    apiAuthToken = newToken;
-    hideLoginOverlay();
-    await postLoginInit();
-  } catch (err) {
-    setLoginError('token', `Login failed: ${err}`);
-  } finally {
-    if (submitBtn) submitBtn.disabled = false;
-  }
-}
-
 /** Called after successful login to resume the startup flow. */
 async function postLoginInit() {
   await refreshApiAuthToken();
@@ -184,34 +144,6 @@ async function postLoginInit() {
 // Settings page auth actions (inline token login / logout)
 // ============================================================
 
-async function loginWithApiToken() {
-  const inputEl = document.getElementById('api-token-input');
-  if (!inputEl) return;
-  const newToken = (inputEl.value || '').trim();
-  if (!newToken) {
-    showSettingsResult(false, '✗ Token cannot be empty');
-    return;
-  }
-  try {
-    const resp = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: newToken }),
-    });
-    if (!resp.ok) {
-      const err = (await resp.json().catch(() => ({}))).error || 'Invalid token';
-      showSettingsResult(false, `✗ ${err}`);
-      return;
-    }
-    inputEl.value = '';
-    apiAuthToken = newToken;
-    showSettingsResult(true, '✓ Authenticated — session established');
-    loadSettingsRuntime();
-  } catch (err) {
-    showSettingsResult(false, `✗ Login failed: ${err}`);
-  }
-}
-
 async function logoutSession() {
   try {
     await fetch('/api/auth/logout', { method: 'POST' });
@@ -219,8 +151,8 @@ async function logoutSession() {
   apiAuthToken = '';
   const tokenEl = document.getElementById('runtime-api-token');
   const sourceEl = document.getElementById('runtime-api-token-source');
-  if (tokenEl) tokenEl.textContent = 'Not authenticated';
-  if (sourceEl) sourceEl.textContent = 'Enter token below (check server startup logs for generated token)';
+  if (tokenEl) tokenEl.textContent = NOT_AUTHENTICATED_TEXT;
+  if (sourceEl) sourceEl.textContent = NOT_AUTHENTICATED_TEXT;
   showSettingsResult(true, '✓ Logged out');
   // If auth is required, redirect back to login overlay
   if (appAuthMode !== 'disabled') {
@@ -250,8 +182,8 @@ async function loadSettingsRuntime() {
   } catch (err) {
     const tokenEl = document.getElementById('runtime-api-token');
     const sourceEl = document.getElementById('runtime-api-token-source');
-    if (tokenEl) tokenEl.textContent = 'Not authenticated';
-    if (sourceEl) sourceEl.textContent = 'Enter token below (check server startup logs for generated token)';
+    if (tokenEl) tokenEl.textContent = NOT_AUTHENTICATED_TEXT;
+    if (sourceEl) sourceEl.textContent = NOT_AUTHENTICATED_TEXT;
   }
 }
 
@@ -382,7 +314,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Check auth state before proceeding — show login overlay if required.
   // Default to auth required / unauthenticated so a /api/init network failure
   // fails secure rather than granting unintended access.
-  let initData = { auth_required: true, authenticated: false, auth_mode: 'token' };
+  let initData = { auth_required: true, authenticated: false, auth_mode: 'misconfigured' };
   try {
     const resp = await fetch('/api/init');
     if (resp.ok) initData = await resp.json();
@@ -390,7 +322,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.error('Failed to contact /api/init - showing login screen as a safe fallback:', err);
   }
 
-  appAuthMode = initData.auth_mode || 'token';
+  appAuthMode = initData.auth_mode || 'misconfigured';
 
   if (initData.auth_required && !initData.authenticated) {
     showLoginOverlay(appAuthMode);

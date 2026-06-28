@@ -138,19 +138,32 @@ def _credentials_auth_configured():
     return bool(username and password)
 
 
+def _ui_auth_misconfigured():
+    """Return True when UI auth is enabled but credentials are missing."""
+    return not _auth_disabled() and not _credentials_auth_configured()
+
+
+def _ui_auth_warning_message():
+    """Return warning text shown when UI auth credentials are not configured."""
+    return (
+        'Web UI authentication is enabled but AUTH_USERNAME/AUTH_PASSWORD are not both set. '
+        'Set both variables, or set DISABLE_AUTH=true only when a trusted reverse proxy already enforces authentication.'
+    )
+
+
 def _get_auth_mode():
     """Return the active authentication mode string.
 
     Returns:
-        'disabled'    – DISABLE_AUTH=true; no credentials required.
-        'credentials' – AUTH_USERNAME + AUTH_PASSWORD are both set; login form shown.
-        'token'       – fallback: API_AUTH_TOKEN (or auto-generated token) login.
+        'disabled'      – DISABLE_AUTH=true; no credentials required.
+        'credentials'   – AUTH_USERNAME + AUTH_PASSWORD are both set; login form shown.
+        'misconfigured' – UI auth enabled but credentials are missing.
     """
     if _auth_disabled():
         return 'disabled'
     if _credentials_auth_configured():
         return 'credentials'
-    return 'token'
+    return 'misconfigured'
 
 
 # Log the active auth mode at startup.
@@ -163,7 +176,7 @@ if _startup_auth_mode == 'disabled':
 elif _startup_auth_mode == 'credentials':
     logger.info('Auth mode: username/password credentials (AUTH_USERNAME + AUTH_PASSWORD).')
 else:
-    logger.info('Auth mode: API token (AUTH_USERNAME/AUTH_PASSWORD not set).')
+    logger.warning('Auth mode: misconfigured. %s', _ui_auth_warning_message())
 
 
 def error_response(message, status_code=500, exc=None):
@@ -1330,11 +1343,16 @@ def index():
     default_view = os.getenv('DEFAULT_VIEW', 'list').strip().lower()
     if default_view not in ('list', 'grid'):
         default_view = 'list'
+    ui_auth_misconfigured = _ui_auth_misconfigured()
+    if ui_auth_misconfigured:
+        logger.warning('UI auth misconfiguration: %s', _ui_auth_warning_message())
     return render_template(
         'index.html',
         default_theme=default_theme,
         default_view=default_view,
         asset_version=ASSET_VERSION,
+        ui_auth_misconfigured=ui_auth_misconfigured,
+        ui_auth_warning_message=_ui_auth_warning_message(),
     )
 
 
@@ -1348,8 +1366,7 @@ def health():
 def auth_login():
     """Validate credentials and establish a server-side session.
 
-    Accepts either username/password (when AUTH_USERNAME + AUTH_PASSWORD are set)
-    or the API token (``{"token": "..."}`` legacy form for programmatic callers).
+    Accepts username/password when AUTH_USERNAME + AUTH_PASSWORD are set.
     On success the browser receives an httpOnly session cookie; credentials are
     never stored client-side.
     """
@@ -1379,19 +1396,7 @@ def auth_login():
         session['authenticated'] = True
         return jsonify({'ok': True, 'auth_mode': 'credentials'})
 
-    # Token mode (default / fallback)
-    provided_token = (data.get('token') or '').strip()
-    expected_token, is_generated = _get_api_auth_token()
-    if not provided_token or not hmac.compare_digest(provided_token, expected_token):
-        return jsonify({'error': 'Invalid API token'}), 401
-    session.clear()
-    session['authenticated'] = True
-    return jsonify({
-        'ok': True,
-        'auth_mode': 'token',
-        'api_auth_token_configured': not is_generated,
-        'api_auth_token_generated': is_generated,
-    })
+    return jsonify({'error': 'UI auth is misconfigured. Set AUTH_USERNAME and AUTH_PASSWORD.'}), 503
 
 
 @app.route('/api/auth/logout', methods=['POST'])
@@ -1410,11 +1415,14 @@ def api_init():
     """
     auth_mode = _get_auth_mode()
     disable_auth = auth_mode == 'disabled'
-    authenticated = disable_auth or session.get('authenticated', False)
+    auth_misconfigured = auth_mode == 'misconfigured'
+    authenticated = disable_auth or (auth_mode == 'credentials' and session.get('authenticated', False))
     return jsonify({
-        'auth_required': not disable_auth,
+        'auth_required': not disable_auth and not auth_misconfigured,
         'authenticated': authenticated,
         'auth_mode': auth_mode,
+        'auth_misconfigured': auth_misconfigured,
+        'warning': _ui_auth_warning_message() if auth_misconfigured else None,
     })
 
 
