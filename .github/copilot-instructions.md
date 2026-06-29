@@ -22,6 +22,7 @@ The application is split across the following layers:
 | `templates/index.html` | Single-page app shell |
 | `static/css/style.css` | Sonarr-inspired dark/light theme CSS |
 | `static/js/app.js` | Frontend logic (library browser, modals, multi-select, settings) |
+| `tests/test_web_app.py` | Unit tests (must all pass) |
 
 ## Local validation before finishing a task
 
@@ -41,6 +42,27 @@ docker compose config
 # Build container image
 docker build -t themarr:test .
 ```
+
+## Configuration
+
+Primary environment variables are defined in `.env.example`:
+
+- `PLEX_URL`, `PLEX_TOKEN` — Plex server credentials
+- `JELLYFIN_URL`, `JELLYFIN_API_KEY`, `JELLYFIN_USER_ID` — Jellyfin server credentials/user context
+- `FLASK_DEBUG` — Flask debug mode (never enable in production)
+- `DEFAULT_THEME` — default UI theme: `dark` or `light`
+- `DEFAULT_VIEW` — default library view: `list` or `grid`
+- `API_KEY` — API key protecting mutating API endpoints; auto-generated and logged at startup when not set
+- `PUSHOVER_APP_TOKEN`, `PUSHOVER_USER_KEY` — optional Pushover notifications
+- `WEBHOOK_USERNAME`, `WEBHOOK_PASSWORD` — optional webhook Basic Auth (both must be set)
+- `PLEX_RETRY_ATTEMPTS`, `PLEX_RETRY_DELAY` — webhook retry tuning
+
+When changing configuration, always update:
+
+- `.env.example`
+- `docker-compose.yml`
+- `Dockerfile`
+- `README.md`
 
 ## Web UI screenshots — CI managed
 
@@ -62,10 +84,13 @@ use CI behavior instead of local screenshot commits:
 ## Implementation constraints
 
 - Keep behavior Docker-compatible (Python 3.11-slim base image).
+- Keep changes minimal and directly related to the user request.
 - Keep environment variable names stable unless explicitly asked to migrate them.
 - Do not hardcode credentials, server URLs, or filesystem paths.
 - Favor explicit logging and clear error messages.
 - Update README when setup/behavior/config changes.
+- Re-run validation commands after edits.
+- When modifying `app/` modules, check that all imports in `web_app.py` still resolve correctly.
 - Do not generate screenshots during normal agent coding/testing sessions.
 - **Keep CSP-compatible frontend code.** Do not add inline JavaScript in templates:
   no `onclick`/`onchange`/`onsubmit`/etc. attributes and no inline `<script>` blocks.
@@ -93,12 +118,11 @@ use CI behavior instead of local screenshot commits:
   scanning). Do not add or modify `.github/workflows/codeql.yml` — a custom workflow
   file would duplicate or conflict with the managed configuration.
 
-## Files to check when changing configuration
+## Security notes
 
-- `.env.example`
-- `docker-compose.yml`
-- `Dockerfile`
-- `README.md`
+- **API key**: `GET /api/settings/runtime` is an **authenticated** endpoint — it requires a valid session cookie or API key header and returns the actual key in the response. The key is never written to `localStorage`. Users log in via the Settings page; the server sets an httpOnly session cookie (`POST /api/auth/login`). The key is kept in JS memory (`apiKey`) for the lifetime of the tab. When `API_KEY` is not set, the auto-generated startup API key is printed to the container log at startup.
+- **yt-dlp**: `remote_components` must NOT be enabled (supply-chain risk — fetches and executes JS from GitHub at runtime).
+- **ThemerrDB URLs**: always validate with `is_valid_youtube_url()` before passing to yt-dlp.
 
 ## Key web UI files
 
@@ -109,9 +133,3 @@ use CI behavior instead of local screenshot commits:
 | `static/js/app.js` | Frontend logic (library browser, modals, multi-select, settings) |
 | `.github/workflows/screenshots.yml` | CI workflow — screenshot artifacts on UI PRs; auto-updates on main |
 | `.github/workflows/sanitize-screenshot-changes.yml` | CI workflow — auto-removes direct screenshots/ changes in branches/PRs |
-
-## API key
-
-The API key is **not** returned by the unauthenticated `GET /api/settings/runtime`
-endpoint. It stays in JS memory for the lifetime of the tab. When `API_KEY`
-is not set, the auto-generated startup API key is printed to the container log at startup.
