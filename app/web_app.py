@@ -73,7 +73,9 @@ from app.theme_state import (
     get_external_ids_for_context, check_themerrdb_availability_for_context,
     check_plex_preview_availability,
 )
-from app.webhook_handlers import check_webhook_server_uuid, process_plex_library_new
+from app.webhook_handlers import (
+    check_webhook_server_uuid, process_plex_library_new, process_jellyfin_item_added,
+)
 from app.bulk_operations import bulk_download_themes
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -184,6 +186,14 @@ def _submit_background_job(name, fn, *args):
     if future is None:
         logger.warning('Failed to queue background job %s', name)
     return future
+
+
+def _download_youtube_theme_to_path(youtube_url, theme_path):
+    """Download a YouTube theme and move it into its final theme.mp3 location."""
+    with tempfile.TemporaryDirectory(dir=YTDLP_WORKDIR) as tmpdir:
+        mp3_path = download_youtube_theme_mp3(youtube_url, tmpdir)
+        theme_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(mp3_path), str(theme_path))
 
 
 def _get_item_context(provider, item_id):
@@ -393,7 +403,7 @@ def enforce_api_auth():
     # before the user has authenticated.
     if request.path in {'/api/auth/login', '/api/init', '/api/cache/status'}:
         return None
-    if request.path == '/api/webhooks/plex':
+    if request.path in {'/api/webhooks/plex', '/api/webhooks/jellyfin'}:
         return None  # Webhook uses its own Basic Auth
     # Require auth for ALL API routes (both read and mutating)
     return _check_api_request_auth(_generated_api_key)
@@ -1428,6 +1438,51 @@ def plex_webhook():
         else:
             logger.warning('Plex webhook: library.new event without ratingKey')
     
+    return jsonify({'success': True}), 200
+
+
+# ============================================================
+# Webhooks — Jellyfin
+# ============================================================
+
+@app.route('/api/webhooks/jellyfin', methods=['POST'])
+def jellyfin_webhook():
+    """Handle Jellyfin webhook events (ItemAdded/library.new)."""
+    basic_auth_error = _check_webhook_basic_auth()
+    if basic_auth_error:
+        return basic_auth_error
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload_str = request.form.get('payload', '')
+        if payload_str:
+            try:
+                payload = json.loads(payload_str)
+            except json.JSONDecodeError:
+                payload = None
+
+    if not isinstance(payload, dict):
+        logger.warning('Jellyfin webhook: missing or invalid payload')
+        return jsonify({'success': True}), 200
+
+    event = payload.get('NotificationType') or payload.get('notificationType') or payload.get('event') or ''
+    logger.info('Jellyfin webhook: event=%s', event)
+    normalized_event = ''.join(ch for ch in str(event).lower() if ch.isalnum())
+    if normalized_event not in {'itemadded', 'librarynew'}:
+        return jsonify({'success': True}), 200
+
+    item_id = payload.get('ItemId') or payload.get('itemId') or payload.get('item_id') or 'unknown'
+    fn = partial(
+        process_jellyfin_item_added,
+        get_item_context_fn=_get_item_context,
+        download_youtube_theme_fn=_download_youtube_theme_to_path,
+    )
+    future = _submit_background_job(f'webhook-jellyfin-{item_id}', fn, payload)
+    if future is None:
+        logger.warning('Jellyfin webhook: failed to queue processing for itemId=%s', item_id)
+    else:
+        logger.info('Jellyfin webhook: queued processing for itemId=%s', item_id)
+
     return jsonify({'success': True}), 200
 
 

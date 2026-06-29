@@ -1595,6 +1595,100 @@ class TestPlexWebhook:
         mock_download.assert_not_called()
 
 
+class TestJellyfinWebhook:
+    def test_item_added_event_queues_processing(self, client):
+        with patch('app.web_app._submit_background_job') as mock_submit:
+            resp = client.post('/api/webhooks/jellyfin', json={'NotificationType': 'ItemAdded', 'ItemId': 'jf-1'})
+        assert resp.status_code == 200
+        assert resp.get_json()['success'] is True
+        mock_submit.assert_called_once()
+
+    def test_non_item_added_event_is_ignored(self, client):
+        with patch('app.web_app._submit_background_job') as mock_submit:
+            resp = client.post('/api/webhooks/jellyfin', json={'NotificationType': 'PlaybackStart', 'ItemId': 'jf-1'})
+        assert resp.status_code == 200
+        assert resp.get_json()['success'] is True
+        mock_submit.assert_not_called()
+
+    def test_process_item_added_downloads_themerrdb_theme_when_available(self, tmp_path):
+        from app.webhook_handlers import process_jellyfin_item_added
+
+        show_dir = tmp_path / 'New Show (2024)'
+        show_dir.mkdir()
+        payload = {'NotificationType': 'ItemAdded', 'ItemId': 'jf-1'}
+        context = {
+            'provider': 'jellyfin',
+            'item_id': 'jf-1',
+            'title': 'New Show',
+            'local_path': show_dir,
+            'item': {'Type': 'Series', 'ProviderIds': {'Imdb': 'tt123'}},
+        }
+        mock_download = MagicMock()
+
+        with patch('app.webhook_handlers.get_themerrdb_theme_for_external_ids', return_value={'youtube_theme_url': 'https://www.youtube.com/watch?v=abc'}), \
+             patch('app.webhook_handlers.send_pushover_notification') as mock_notify, \
+             patch('app.webhook_handlers.sync_cached_item_theme_state') as mock_sync:
+            process_jellyfin_item_added(
+                payload,
+                get_item_context_fn=lambda _provider, _item_id: context,
+                download_youtube_theme_fn=mock_download,
+            )
+
+        mock_download.assert_called_once_with('https://www.youtube.com/watch?v=abc', show_dir / 'theme.mp3')
+        mock_sync.assert_called_once_with('jellyfin', 'jf-1')
+        mock_notify.assert_called_once()
+
+    def test_process_item_added_skips_when_local_theme_exists(self, tmp_path):
+        from app.webhook_handlers import process_jellyfin_item_added
+
+        show_dir = tmp_path / 'Existing Show (2024)'
+        show_dir.mkdir()
+        (show_dir / 'theme.mp3').write_bytes(b'existing')
+        payload = {'NotificationType': 'ItemAdded', 'ItemId': 'jf-1'}
+        context = {
+            'provider': 'jellyfin',
+            'item_id': 'jf-1',
+            'title': 'Existing Show',
+            'local_path': show_dir,
+            'item': {'Type': 'Series', 'ProviderIds': {'Imdb': 'tt123'}},
+        }
+        mock_download = MagicMock()
+
+        with patch('app.webhook_handlers.get_themerrdb_theme_for_external_ids') as mock_themerrdb:
+            process_jellyfin_item_added(
+                payload,
+                get_item_context_fn=lambda _provider, _item_id: context,
+                download_youtube_theme_fn=mock_download,
+            )
+
+        mock_themerrdb.assert_not_called()
+        mock_download.assert_not_called()
+
+    def test_process_item_added_skips_when_themerrdb_has_no_theme(self, tmp_path):
+        from app.webhook_handlers import process_jellyfin_item_added
+
+        show_dir = tmp_path / 'No Theme Show (2024)'
+        show_dir.mkdir()
+        payload = {'NotificationType': 'ItemAdded', 'ItemId': 'jf-1'}
+        context = {
+            'provider': 'jellyfin',
+            'item_id': 'jf-1',
+            'title': 'No Theme Show',
+            'local_path': show_dir,
+            'item': {'Type': 'Series', 'ProviderIds': {'Imdb': 'tt123'}},
+        }
+        mock_download = MagicMock()
+
+        with patch('app.webhook_handlers.get_themerrdb_theme_for_external_ids', return_value=None):
+            process_jellyfin_item_added(
+                payload,
+                get_item_context_fn=lambda _provider, _item_id: context,
+                download_youtube_theme_fn=mock_download,
+            )
+
+        mock_download.assert_not_called()
+
+
 # ============================================================
 # Pushover notification tests
 # ============================================================

@@ -29,8 +29,8 @@ You can also upload custom MP3 files and copy existing local themes between item
 - **Bulk actions**  
   Multi-select and bulk download themes from provider source for Plex libraries.
 
-- **Plex webhooks**  
-  Automatically process new Plex items from webhook events.
+- **Plex + Jellyfin webhooks**  
+  Automatically process new library items from webhook events.
 
 - **Pushover notifications (optional)**  
   Receive push notifications when downloads complete.
@@ -94,8 +94,8 @@ If your Plex or Jellyfin container mounts `/data/media/tv`, use `/data/media/tv:
 | `AUTH_PASSWORD` | No | — | Password for the login screen (used with `AUTH_USERNAME` when `DISABLE_AUTH=false`). |
 | `DISABLE_AUTH` | No | `false` | Set to `true` to disable all UI authentication. Only use this when a trusted reverse proxy already handles auth (see [Disable auth](#disable-auth-reverse-proxy)). |
 | `API_KEY` | No | auto-generated | API key for programmatic/webhook access. If unset, Themarr generates one at startup and logs it. |
-| `WEBHOOK_USERNAME` | No | — | Optional Basic Auth username for Plex webhook endpoint |
-| `WEBHOOK_PASSWORD` | No | — | Optional Basic Auth password for Plex webhook endpoint |
+| `WEBHOOK_USERNAME` | No | — | Optional Basic Auth username for Plex/Jellyfin webhook endpoints |
+| `WEBHOOK_PASSWORD` | No | — | Optional Basic Auth password for Plex/Jellyfin webhook endpoints |
 | `PUSHOVER_APP_TOKEN` | No | — | Pushover app token (required together with `PUSHOVER_USER_KEY`) |
 | `PUSHOVER_USER_KEY` | No | — | Pushover user/group key (required together with `PUSHOVER_APP_TOKEN`) |
 
@@ -172,6 +172,36 @@ Themarr can process Plex webhook events for newly added library items.
 
 - Themarr always validates webhook `Server.uuid` against the configured Plex server UUID (`machineIdentifier`) and rejects mismatches.
 - To harden ingestion, set `WEBHOOK_USERNAME` + `WEBHOOK_PASSWORD` and configure the webhook URL with credentials (e.g. `http://user:pass@host:8080/api/webhooks/plex`) so Plex sends Basic Auth.
+
+## Jellyfin Webhooks
+
+Themarr can process Jellyfin webhook events for newly added library items.
+
+Unlike Plex webhooks, Jellyfin webhook automation only downloads from **ThemerrDB**:
+
+- If local `theme.mp3` already exists, Themarr skips the item.
+- If ThemerrDB has no matching theme for the item, nothing is downloaded.
+
+### Setup (Jellyfin Webhook plugin)
+
+1. In Jellyfin, install/enable the **Webhook** plugin.
+2. Add a webhook destination URL:
+   ```
+   http://<themarr-host>:8080/api/webhooks/jellyfin
+   ```
+3. Enable the **ItemAdded** notification.
+4. Use a JSON payload template that includes at least `NotificationType` and `ItemId`, for example:
+   ```json
+   {
+     "NotificationType": "{{NotificationType}}",
+     "ItemId": "{{ItemId}}"
+   }
+   ```
+5. Save and test the webhook.
+
+### Optional webhook hardening
+
+- Reuse `WEBHOOK_USERNAME` + `WEBHOOK_PASSWORD` to protect both Plex and Jellyfin webhook endpoints with Basic Auth.
 
 ### API write protection (always enabled)
 
