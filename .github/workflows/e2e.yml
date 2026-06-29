@@ -1,0 +1,66 @@
+name: E2E smoke tests
+
+# Run headless Playwright tests against a real Flask process on every PR targeting
+# main.  Tests cover the critical user flows (login, no-auth load, library/sidebar
+# rendering, item cards) without requiring a real Plex/Jellyfin server — all
+# provider-dependent API calls are intercepted by Playwright route mocks.
+#
+# On failure the job uploads screenshots and Playwright traces as artefacts so
+# developers can diagnose regressions without re-running locally.
+
+on:
+  pull_request:
+    branches:
+      - main
+  # Allow manual re-runs from the Actions tab without opening a new PR.
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  # One E2E run per PR; cancel an in-progress run when a new commit is pushed.
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Playwright smoke tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-e2e.txt
+
+      - name: Install Playwright Chromium
+        run: playwright install --with-deps chromium
+
+      - name: Run E2E smoke tests
+        run: |
+          python3 -m pytest tests/e2e/ -v \
+            --screenshot=only-on-failure \
+            --tracing=retain-on-failure \
+            --output=test-results/e2e
+
+      - name: Upload failure artefacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-failure-artefacts
+          path: test-results/e2e/
+          # Keep artefacts for 30 days so developers have time to investigate
+          retention-days: 30
