@@ -11,18 +11,53 @@ Pushover notifications.
 
 The application is split across the following layers:
 
+### App modules (`app/`)
+
+| File | Purpose |
+|---|---|
+| `app/web_app.py` | Flask app entry point — routes, request handling |
+| `app/auth.py` | Authentication helpers: API key, session, DISABLE_AUTH |
+| `app/bulk_operations.py` | Bulk theme download logic |
+| `app/cache.py` | Library cache, poster cache, theme hydration status |
+| `app/errors.py` | Shared error response helpers |
+| `app/external_ids.py` | IMDB/TMDB/TVDB ID extraction for Plex and Jellyfin items |
+| `app/jellyfin_utils.py` | Jellyfin connection, library helpers, and item serialization |
+| `app/media_utils.py` | Filesystem path validation, upload constraints, theme scanning |
+| `app/notifications.py` | Pushover notification helpers |
+| `app/plex_utils.py` | Plex server connection and library path helpers |
+| `app/theme_state.py` | Per-item theme state queries (local, Plex, ThemerrDB) |
+| `app/themerrdb_service.py` | ThemerrDB HTTP queries and cache |
+| `app/webhook_handlers.py` | Plex webhook processing |
+| `app/youtube_utils.py` | YouTube URL validation and yt-dlp option builders |
+
+### Frontend
+
 | File/Directory | Purpose |
 |---|---|
-| `web_app.py` | Flask app entry point — routes, request handling, caching |
-| `app/media_utils.py` | Filesystem path validation, upload constraints, theme scanning |
-| `app/external_ids.py` | IMDB/TMDB/TVDB ID extraction for Plex and Jellyfin items |
-| `app/youtube_utils.py` | YouTube URL validation and yt-dlp option builders |
-| `app/plex_utils.py` | Plex server connection and library path helpers |
-| `app/jellyfin_utils.py` | Jellyfin connection and media path helpers |
 | `templates/index.html` | Single-page app shell |
 | `static/css/style.css` | Sonarr-inspired dark/light theme CSS |
 | `static/js/app.js` | Frontend logic (library browser, modals, multi-select, settings) |
-| `tests/test_web_app.py` | Unit tests (must all pass) |
+
+### Tests (`tests/`)
+
+Tests mirror the app module structure. Each test file covers the corresponding app module.
+
+| File | Tests for |
+|---|---|
+| `tests/conftest.py` | Shared pytest fixtures: `app`, `client`, `mock_plex` |
+| `tests/helpers.py` | Shared test helpers: `make_mock_show`, `make_mock_movie` |
+| `tests/test_web_app.py` | Core routes: status, libraries, items, theme operations, settings |
+| `tests/test_auth.py` | `app/auth.py` — login, logout, sessions, API key, DISABLE_AUTH |
+| `tests/test_cache.py` | `app/cache.py`, `app/theme_state.py` — cache status, theme sync, refresh |
+| `tests/test_external_ids.py` | `app/external_ids.py` — external ID extraction |
+| `tests/test_media_utils.py` | `app/media_utils.py` — path validation, MP3 magic bytes |
+| `tests/test_notifications.py` | `app/notifications.py` — Pushover notifications |
+| `tests/test_themerrdb.py` | `app/themerrdb_service.py` — ThemerrDB queries and cache |
+| `tests/test_bulk_operations.py` | `app/bulk_operations.py` — bulk theme download |
+| `tests/test_webhooks.py` | `app/webhook_handlers.py` — Plex webhook processing |
+| `tests/test_youtube.py` | `app/youtube_utils.py` — YouTube search, download, option hygiene |
+
+When adding tests for a new feature, place them in the file that matches the app module being tested. Add shared fixtures to `tests/conftest.py` and factory helpers to `tests/helpers.py`.
 
 ## Local validation before finishing a task
 
@@ -30,7 +65,6 @@ Always run **all** of these before pushing changes:
 
 ```bash
 # Syntax check
-python3 -m py_compile web_app.py
 python3 -m py_compile app/*.py
 
 # Unit tests (must all pass)
