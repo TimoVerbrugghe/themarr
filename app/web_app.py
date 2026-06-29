@@ -8,11 +8,9 @@ import re
 import secrets
 import shutil
 import tempfile
-import threading
 import time
 import hmac
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -38,7 +36,7 @@ from app.youtube_utils import (
 )
 from app.plex_utils import (
     get_plex, plex_is_configured, plex_session_get, get_section_base_paths,
-    get_item_local_path, get_validated_plex_local_path,
+    get_item_local_path, get_validated_plex_local_path, download_plex_theme_to_path,
 )
 from app.jellyfin_utils import (
     jellyfin_is_configured, get_jellyfin, get_jellyfin_item_local_path, _normalize_provider,
@@ -59,7 +57,8 @@ from app.cache import (
     advance_theme_hydration_progress, mark_theme_hydration_finished, get_theme_hydration_status,
     get_cached_item, get_cached_poster, set_cached_poster, fetch_poster_bytes,
     submit_background_job, sync_cached_item, sync_cached_item_theme_state,
-    item_to_dict, build_library_items,
+    item_to_dict, build_library_items, background_warm_poster_cache,
+    kick_off_cache_warmup,
     _library_cache_lock, _section_build_locks_lock, _theme_hydration_status_lock,
     _theme_hydration_status, _library_cache,
 )
@@ -126,11 +125,6 @@ _SETTINGS_ENV_VARS = (
 )
 
 
-# Startup warmup flag (runs once per process)
-_startup_warmup_started = False
-_startup_warmup_lock = threading.Lock()
-
-
 # API_KEY initialization logging
 if not (os.getenv('API_KEY') or '').strip():
     _log_generated_api_key_warning()
@@ -192,22 +186,6 @@ def _submit_background_job(name, fn, *args):
     return future
 
 
-def _ensure_startup_warmup():
-    """Kick off startup warmup once per process."""
-    global _startup_warmup_started
-    with _startup_warmup_lock:
-        if _startup_warmup_started:
-            return
-        _startup_warmup_started = True
-    _kick_off_cache_warmup()
-
-
-def _kick_off_cache_warmup():
-    """Invalidate cache and kick off warmup."""
-    invalidate_library_cache()
-    return True
-
-
 def _get_item_context(provider, item_id):
     """Return provider-specific item context for theme operations."""
     provider = _normalize_provider(provider)
@@ -259,49 +237,6 @@ def is_valid_upload(upload_file):
         return False, ('File content does not appear to be a valid MP3', 400)
 
     return True, None
-
-
-# ============================================================
-# ============================================================
-
-# Theme download helpers
-# ============================================================
-
-
-def _download_plex_theme_to_path(plex, item, theme_path):
-    """Download Plex theme for *item* and save to *theme_path*. Returns True on success."""
-    url = plex.url(item.theme, includeToken=True)
-    response = plex_session_get(plex, url, stream=True, timeout=30)
-    response.raise_for_status()
-    theme_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(theme_path, 'wb') as fh:
-        for chunk in response.iter_content(chunk_size=8192):
-            if chunk:
-                fh.write(chunk)
-    logger.info('Downloaded Plex theme for %s to %s', item.title, theme_path)
-    return True
-
-
-
-# ============================================================
-# ============================================================
-
-# Theme download helpers
-# ============================================================
-
-
-def _download_plex_theme_to_path(plex, item, theme_path):
-    """Download Plex theme for *item* and save to *theme_path*. Returns True on success."""
-    url = plex.url(item.theme, includeToken=True)
-    response = plex_session_get(plex, url, stream=True, timeout=30)
-    response.raise_for_status()
-    theme_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(theme_path, 'wb') as fh:
-        for chunk in response.iter_content(chunk_size=8192):
-            if chunk:
-                fh.write(chunk)
-    logger.info('Downloaded Plex theme for %s to %s', item.title, theme_path)
-    return True
 
 
 @app.route('/')
@@ -451,7 +386,6 @@ def add_security_headers(response):
 @app.before_request
 def enforce_api_auth():
     """Protect API endpoints with API key or session auth."""
-    _ensure_startup_warmup()
     if not request.path.startswith('/api/'):
         return None
     # Always-public endpoints: login flow and initial auth-state probe.
@@ -1485,7 +1419,7 @@ def plex_webhook():
         
         rating_key = metadata.get('ratingKey')
         if rating_key:
-            fn = partial(process_plex_library_new, download_plex_theme_fn=_download_plex_theme_to_path)
+            fn = partial(process_plex_library_new, download_plex_theme_fn=download_plex_theme_to_path)
             future = _submit_background_job(f'webhook-plex-{rating_key}', fn, rating_key)
             if future is None:
                 logger.warning('Plex webhook: failed to queue processing for ratingKey=%s', rating_key)
@@ -1542,7 +1476,7 @@ def settings_rescan():
                 local_path = get_item_local_path(item)
                 if local_path and str(local_path) in theme_dirs:
                     with_theme += 1
-        _kick_off_cache_warmup()
+        kick_off_cache_warmup()
         return jsonify({
             'success': True,
             'total': total,
@@ -1556,13 +1490,17 @@ def settings_rescan():
 @app.route('/api/settings/refresh-cache', methods=['POST'])
 def settings_refresh_cache():
     """Invalidate and rebuild the library item cache in the background."""
-    started = _kick_off_cache_warmup()
+    started = kick_off_cache_warmup()
     if started:
         return jsonify({'success': True, 'message': 'Cache refresh started in background'})
     return jsonify({'success': True, 'message': 'Cache refresh already in progress'})
 
 
 if __name__ == '__main__':
+    kick_off_cache_warmup()
     port = int(os.getenv('PORT', '8080'))
     debug = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
     app.run(host='0.0.0.0', port=port, debug=debug)
+else:
+    # Running under gunicorn — warm the cache as soon as the worker starts.
+    kick_off_cache_warmup()

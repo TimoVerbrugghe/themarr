@@ -211,8 +211,12 @@
           <h2 class="settings-section-title">Actions</h2>
           <div class="settings-actions">
             <button id="settings-test-plex-btn" class="btn btn-secondary settings-action-btn">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M11.916 0C5.333 0 0 5.333 0 11.916s5.333 11.916 11.916 11.916 11.916-5.333 11.916-11.916S18.499 0 11.916 0zm1.501 16.14L9.143 12l4.274-4.14 1.263.865-3.25 3.275 3.25 3.275z"/></svg>
+              <img src="https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/plex.svg" alt="" class="provider-logo" aria-hidden="true">
               Test Plex Connectivity
+            </button>
+            <button id="settings-test-jellyfin-btn" class="btn btn-secondary settings-action-btn">
+              <img src="https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/jellyfin.svg" alt="" class="provider-logo" aria-hidden="true">
+              Test Jellyfin Connectivity
             </button>
             <button id="settings-refresh-libraries-btn" class="btn btn-secondary settings-action-btn">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z"/></svg>
@@ -221,10 +225,6 @@
             <button id="settings-test-pushover-btn" class="btn btn-secondary settings-action-btn">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1z"/></svg>
               Test Pushover
-            </button>
-            <button id="settings-rescan-btn" class="btn btn-secondary settings-action-btn">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-              Rescan Files
             </button>
           </div>
           <div id="settings-action-result" class="settings-action-result hidden"></div>
@@ -241,47 +241,50 @@
               </button>
             </div>
             <div id="runtime-api-key-source">Loading…</div>
+            <div id="api-key-copy-result" class="settings-action-result hidden"></div>
           </div>
         </div>
 
         <!-- Environment variables reference -->
         <div class="settings-section">
           <h2 class="settings-section-title">Environment Variables</h2>
-          <table class="settings-envtable">
-            <thead>
-              <tr>
-                <th>Variable</th>
-                <th>Default</th>
-                <th>Current</th>
-                <th>Description</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr class="settings-envtable-group"><td colspan="4">Plex</td></tr>
-              <tr><td><code>PLEX_URL</code></td><td>—</td><td data-env-current="PLEX_URL">Loading…</td><td>Plex server URL (optional when using Jellyfin-only setup).</td></tr>
-              <tr><td><code>PLEX_TOKEN</code></td><td>—</td><td data-env-current="PLEX_TOKEN">Loading…</td><td>Plex authentication token (optional when using Jellyfin-only setup).</td></tr>
-              <tr class="settings-envtable-group"><td colspan="4">Jellyfin</td></tr>
-              <tr><td><code>JELLYFIN_URL</code></td><td>—</td><td data-env-current="JELLYFIN_URL">Loading…</td><td>Base URL of your Jellyfin server (e.g. <code>http://192.168.1.50:8096</code>).</td></tr>
-              <tr><td><code>JELLYFIN_API_KEY</code></td><td>—</td><td data-env-current="JELLYFIN_API_KEY">Loading…</td><td>Jellyfin API key (Dashboard → API Keys).</td></tr>
-              <tr><td><code>JELLYFIN_USER_ID</code></td><td>first user</td><td data-env-current="JELLYFIN_USER_ID">Loading…</td><td>Optional Jellyfin user ID used for library/item access. If omitted, Themarr uses the first user returned by Jellyfin.</td></tr>
-              <tr class="settings-envtable-group"><td colspan="4">Web UI</td></tr>
-              <tr><td><code>DEFAULT_THEME</code></td><td><code>dark</code></td><td data-env-current="DEFAULT_THEME">Loading…</td><td>Initial colour theme (<code>dark</code> or <code>light</code>). Users can override this in-browser.</td></tr>
-              <tr><td><code>DEFAULT_VIEW</code></td><td><code>list</code></td><td data-env-current="DEFAULT_VIEW">Loading…</td><td>Initial library view (<code>list</code> or <code>grid</code>). Users can override this in-browser via the view-toggle buttons.</td></tr>
-              <tr><td><code>FLASK_DEBUG</code></td><td><code>false</code></td><td data-env-current="FLASK_DEBUG">Loading…</td><td>Enable Flask debug mode. Do not use in production.</td></tr>
-              <tr><td><code>AUTH_USERNAME</code></td><td>—</td><td data-env-current="AUTH_USERNAME">Loading…</td><td>Username for credentials-based UI authentication.</td></tr>
-              <tr><td><code>AUTH_PASSWORD</code></td><td>—</td><td data-env-current="AUTH_PASSWORD">Loading…</td><td>Password for credentials-based UI authentication.</td></tr>
-              <tr><td><code>DISABLE_AUTH</code></td><td><code>false</code></td><td data-env-current="DISABLE_AUTH">Loading…</td><td>Set to <code>true</code> to bypass UI login (only behind trusted reverse proxy).</td></tr>
-              <tr><td><code>API_KEY</code></td><td><code>auto-generated</code></td><td data-env-current="API_KEY">Loading…</td><td>API key used for mutating API routes. If unset, Themarr generates one at startup and shows it above.</td></tr>
-              <tr class="settings-envtable-group"><td colspan="4">Notifications (optional)</td></tr>
-              <tr><td><code>PUSHOVER_APP_TOKEN</code></td><td>—</td><td data-env-current="PUSHOVER_APP_TOKEN">Loading…</td><td>Pushover application token. Leave blank to disable push notifications.</td></tr>
-              <tr><td><code>PUSHOVER_USER_KEY</code></td><td>—</td><td data-env-current="PUSHOVER_USER_KEY">Loading…</td><td>Pushover user/group key. Leave blank to disable push notifications.</td></tr>
-              <tr class="settings-envtable-group"><td colspan="4">Webhooks (optional)</td></tr>
-              <tr><td><code>WEBHOOK_USERNAME</code></td><td>—</td><td data-env-current="WEBHOOK_USERNAME">Loading…</td><td>Basic-auth username for the Plex webhook endpoint.</td></tr>
-              <tr><td><code>WEBHOOK_PASSWORD</code></td><td>—</td><td data-env-current="WEBHOOK_PASSWORD">Loading…</td><td>Basic-auth password for the Plex webhook endpoint.</td></tr>
-              <tr><td><code>PLEX_RETRY_ATTEMPTS</code></td><td><code>10</code></td><td data-env-current="PLEX_RETRY_ATTEMPTS">Loading…</td><td>Max number of Plex lookup attempts after a webhook event.</td></tr>
-              <tr><td><code>PLEX_RETRY_DELAY</code></td><td><code>30</code></td><td data-env-current="PLEX_RETRY_DELAY">Loading…</td><td>Seconds between each Plex lookup attempt (linearly increasing).</td></tr>
-            </tbody>
-          </table>
+          <div class="settings-envtable-wrap">
+            <table class="settings-envtable">
+              <thead>
+                <tr>
+                  <th>Variable</th>
+                  <th class="settings-envtable-col-default">Default</th>
+                  <th class="settings-envtable-col-current">Current</th>
+                  <th>Description</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="settings-envtable-group"><td colspan="4">Plex</td></tr>
+                <tr><td><code>PLEX_URL</code></td><td class="settings-envtable-col-default">—</td><td class="settings-envtable-col-current" data-env-current="PLEX_URL">Loading…</td><td>Plex server URL (optional when using Jellyfin-only setup).</td></tr>
+                <tr><td><code>PLEX_TOKEN</code></td><td class="settings-envtable-col-default">—</td><td class="settings-envtable-col-current" data-env-current="PLEX_TOKEN">Loading…</td><td>Plex authentication token (optional when using Jellyfin-only setup).</td></tr>
+                <tr class="settings-envtable-group"><td colspan="4">Jellyfin</td></tr>
+                <tr><td><code>JELLYFIN_URL</code></td><td class="settings-envtable-col-default">—</td><td class="settings-envtable-col-current" data-env-current="JELLYFIN_URL">Loading…</td><td>Base URL of your Jellyfin server (e.g. <code>http://192.168.1.50:8096</code>).</td></tr>
+                <tr><td><code>JELLYFIN_API_KEY</code></td><td class="settings-envtable-col-default">—</td><td class="settings-envtable-col-current" data-env-current="JELLYFIN_API_KEY">Loading…</td><td>Jellyfin API key (Dashboard → API Keys).</td></tr>
+                <tr><td><code>JELLYFIN_USER_ID</code></td><td class="settings-envtable-col-default">first user</td><td class="settings-envtable-col-current" data-env-current="JELLYFIN_USER_ID">Loading…</td><td>Optional Jellyfin user ID used for library/item access. If omitted, Themarr uses the first user returned by Jellyfin.</td></tr>
+                <tr class="settings-envtable-group"><td colspan="4">Web UI</td></tr>
+                <tr><td><code>DEFAULT_THEME</code></td><td class="settings-envtable-col-default"><code>dark</code></td><td class="settings-envtable-col-current" data-env-current="DEFAULT_THEME">Loading…</td><td>Initial colour theme (<code>dark</code> or <code>light</code>). Users can override this in-browser.</td></tr>
+                <tr><td><code>DEFAULT_VIEW</code></td><td class="settings-envtable-col-default"><code>list</code></td><td class="settings-envtable-col-current" data-env-current="DEFAULT_VIEW">Loading…</td><td>Initial library view (<code>list</code> or <code>grid</code>). Users can override this in-browser via the view-toggle buttons.</td></tr>
+                <tr><td><code>FLASK_DEBUG</code></td><td class="settings-envtable-col-default"><code>false</code></td><td class="settings-envtable-col-current" data-env-current="FLASK_DEBUG">Loading…</td><td>Enable Flask debug mode. Do not use in production.</td></tr>
+                <tr><td><code>AUTH_USERNAME</code></td><td class="settings-envtable-col-default">—</td><td class="settings-envtable-col-current" data-env-current="AUTH_USERNAME">Loading…</td><td>Username for credentials-based UI authentication.</td></tr>
+                <tr><td><code>AUTH_PASSWORD</code></td><td class="settings-envtable-col-default">—</td><td class="settings-envtable-col-current" data-env-current="AUTH_PASSWORD">Loading…</td><td>Password for credentials-based UI authentication.</td></tr>
+                <tr><td><code>DISABLE_AUTH</code></td><td class="settings-envtable-col-default"><code>false</code></td><td class="settings-envtable-col-current" data-env-current="DISABLE_AUTH">Loading…</td><td>Set to <code>true</code> to bypass UI login (only behind trusted reverse proxy).</td></tr>
+                <tr><td><code>API_KEY</code></td><td class="settings-envtable-col-default"><code>auto-generated</code></td><td class="settings-envtable-col-current" data-env-current="API_KEY">Loading…</td><td>API key used for mutating API routes. If unset, Themarr generates one at startup and shows it above.</td></tr>
+                <tr class="settings-envtable-group"><td colspan="4">Notifications (optional)</td></tr>
+                <tr><td><code>PUSHOVER_APP_TOKEN</code></td><td class="settings-envtable-col-default">—</td><td class="settings-envtable-col-current" data-env-current="PUSHOVER_APP_TOKEN">Loading…</td><td>Pushover application token. Leave blank to disable push notifications.</td></tr>
+                <tr><td><code>PUSHOVER_USER_KEY</code></td><td class="settings-envtable-col-default">—</td><td class="settings-envtable-col-current" data-env-current="PUSHOVER_USER_KEY">Loading…</td><td>Pushover user/group key. Leave blank to disable push notifications.</td></tr>
+                <tr class="settings-envtable-group"><td colspan="4">Webhooks (optional)</td></tr>
+                <tr><td><code>WEBHOOK_USERNAME</code></td><td class="settings-envtable-col-default">—</td><td class="settings-envtable-col-current" data-env-current="WEBHOOK_USERNAME">Loading…</td><td>Basic-auth username for the Plex webhook endpoint.</td></tr>
+                <tr><td><code>WEBHOOK_PASSWORD</code></td><td class="settings-envtable-col-default">—</td><td class="settings-envtable-col-current" data-env-current="WEBHOOK_PASSWORD">Loading…</td><td>Basic-auth password for the Plex webhook endpoint.</td></tr>
+                <tr><td><code>PLEX_RETRY_ATTEMPTS</code></td><td class="settings-envtable-col-default"><code>10</code></td><td class="settings-envtable-col-current" data-env-current="PLEX_RETRY_ATTEMPTS">Loading…</td><td>Max number of Plex lookup attempts after a webhook event.</td></tr>
+                <tr><td><code>PLEX_RETRY_DELAY</code></td><td class="settings-envtable-col-default"><code>30</code></td><td class="settings-envtable-col-current" data-env-current="PLEX_RETRY_DELAY">Loading…</td><td>Seconds between each Plex lookup attempt (linearly increasing).</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </main>

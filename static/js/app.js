@@ -51,6 +51,7 @@ let apiKey = '';
 let appAuthMode = 'misconfigured';
 const NOT_AUTHENTICATED_TEXT = 'Not authenticated';
 let plexConfigured = false;
+let jellyfinConfigured = false;
 // Remove any API key previously stored in localStorage by older versions of this app.
 try { localStorage.removeItem('themarr-api-token'); } catch (_) { /* ignore */ }
 
@@ -65,6 +66,7 @@ function syncPlexFeatureVisibility() {
   const bulkBtn = document.getElementById('btn-bulk-download');
   const plexSourceBtn = document.getElementById('get-theme-btn-plex');
   const settingsPlexTestBtn = document.getElementById('settings-test-plex-btn');
+  const settingsJellyfinTestBtn = document.getElementById('settings-test-jellyfin-btn');
 
   if (plexHeading) plexHeading.classList.toggle('hidden', !plexConfigured);
   if (plexNav) plexNav.classList.toggle('hidden', !plexConfigured);
@@ -72,6 +74,7 @@ function syncPlexFeatureVisibility() {
   if (bulkBtn) bulkBtn.classList.toggle('hidden', !plexConfigured);
   if (plexSourceBtn) plexSourceBtn.classList.toggle('hidden', !plexConfigured);
   if (settingsPlexTestBtn) settingsPlexTestBtn.classList.toggle('hidden', !plexConfigured);
+  if (settingsJellyfinTestBtn) settingsJellyfinTestBtn.classList.toggle('hidden', !jellyfinConfigured);
 
   if (!plexConfigured) {
     activeFilters.plex = false;
@@ -83,12 +86,25 @@ function syncPlexFeatureVisibility() {
 function copyApiKey() {
   const key = apiKey || '';
   if (!key) {
-    showSettingsResult(false, '✗ Not logged in — paste the API key from the server logs and click Login first');
+    showApiKeyCopyResult(false, '✗ Not logged in — paste the API key from the server logs and click Login first');
     return;
   }
   navigator.clipboard.writeText(key)
-    .then(() => showSettingsResult(true, '✓ API key copied to clipboard'))
-    .catch((err) => showSettingsResult(false, `✗ Failed to copy API key: ${err}`));
+    .then(() => showApiKeyCopyResult(true, '✓ API key copied to clipboard'))
+    .catch((err) => showApiKeyCopyResult(false, `✗ Failed to copy API key: ${err}`));
+}
+
+function showApiKeyCopyResult(ok, message) {
+  const el = document.getElementById('api-key-copy-result');
+  if (!el) return;
+  el.className = `settings-action-result ${ok ? 'result-ok' : 'result-err'}`;
+  el.textContent = message;
+  if (ok) {
+    setTimeout(() => {
+      el.className = 'settings-action-result hidden';
+      el.textContent = '';
+    }, 3000);
+  }
 }
 
 // ============================================================
@@ -341,9 +357,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindIfPresent('btn-bulk-download', 'click', bulkDownload);
   bindIfPresent('btn-bulk-clear', 'click', deselectAll);
   bindIfPresent('settings-test-plex-btn', 'click', settingsTestPlex);
+  bindIfPresent('settings-test-jellyfin-btn', 'click', settingsTestJellyfin);
   bindIfPresent('settings-refresh-libraries-btn', 'click', settingsRefreshLibraries);
   bindIfPresent('settings-test-pushover-btn', 'click', settingsTestPushover);
-  bindIfPresent('settings-rescan-btn', 'click', settingsRescan);
   bindIfPresent('settings-api-key-copy-btn', 'click', copyApiKey);
   bindIfPresent('btn-confirm-download', 'click', confirmDownload);
   bindIfPresent('btn-confirm-copy-theme', 'click', confirmCopyTheme);
@@ -553,12 +569,14 @@ async function checkConnectionStatuses() {
     const plexStatus = data.plex || { ...plexFallback, connected: Boolean(data.connected), server_name: data.server_name };
     const jellyfinStatus = data.jellyfin || jellyfinFallback;
     plexConfigured = Boolean(plexStatus.url_configured);
+    jellyfinConfigured = Boolean(jellyfinStatus.url_configured);
     syncPlexFeatureVisibility();
 
     setProviderConnectionStatus('Plex', plexStatus, 'plex-status', 'plex-status-text');
     setProviderConnectionStatus('Jellyfin', jellyfinStatus, 'jellyfin-status', 'jellyfin-status-text');
   } catch {
     plexConfigured = false;
+    jellyfinConfigured = false;
     syncPlexFeatureVisibility();
     setProviderConnectionStatus('Plex', plexFallback, 'plex-status', 'plex-status-text');
     setProviderConnectionStatus('Jellyfin', jellyfinFallback, 'jellyfin-status', 'jellyfin-status-text');
@@ -2094,15 +2112,36 @@ async function settingsTestPlex() {
 }
 
 async function settingsRefreshLibraries() {
-  showSettingsResult(true, 'Refreshing libraries…');
+  showSettingsResult(true, 'Refreshing libraries and scanning theme files…');
   try {
     libraryCache.clear();
     await loadLibraries();
-    // Rebuild server-side item cache in the background (don't await — it takes time)
+    // Rebuild server-side item cache (includes theme file scan) in the background.
     apiPost('/api/settings/refresh-cache', {}).catch(() => {});
-    showSettingsResult(true, '✓ Libraries refreshed successfully. Item cache is rebuilding in the background.');
+    showSettingsResult(true, '✓ Libraries refreshed successfully. Item cache and theme scan are rebuilding in the background.');
   } catch (err) {
     showSettingsResult(false, `✗ Failed to refresh libraries: ${err}`);
+  }
+}
+
+async function settingsTestJellyfin() {
+  if (!jellyfinConfigured) {
+    showSettingsResult(false, '✗ Jellyfin is not configured (set JELLYFIN_URL and JELLYFIN_API_KEY).');
+    return;
+  }
+  showSettingsResult(true, 'Connecting to Jellyfin…');
+  try {
+    const data = await apiGet('/api/status');
+    const jellyfin = data.jellyfin || {};
+    if (jellyfin.connected) {
+      const name = jellyfin.server_name ? `"${jellyfin.server_name}"` : 'Jellyfin';
+      const ver = jellyfin.version ? ` v${jellyfin.version}` : '';
+      showSettingsResult(true, `✓ Connected to ${name}${ver}`);
+    } else {
+      showSettingsResult(false, `✗ Not connected: ${jellyfin.error || 'Unknown error'}`);
+    }
+  } catch (err) {
+    showSettingsResult(false, `✗ ${err}`);
   }
 }
 
@@ -2120,23 +2159,6 @@ async function settingsTestPushover() {
   }
 }
 
-async function settingsRescan() {
-  showSettingsResult(true, 'Scanning libraries for theme.mp3 files…');
-  try {
-    const data = await apiPost('/api/settings/rescan', {});
-    if (data.error) {
-      showSettingsResult(false, `✗ ${data.error}`);
-    } else {
-      libraryCache.clear();
-      showSettingsResult(
-        true,
-        `✓ Scan complete — ${data.total} items found: ${data.with_theme} with theme, ${data.without_theme} without. Cache is rebuilding in the background.`,
-      );
-    }
-  } catch (err) {
-    showSettingsResult(false, `✗ ${err}`);
-  }
-}
 
 // ============================================================
 // Modal helpers

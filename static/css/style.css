@@ -350,6 +350,9 @@ a:hover { color: var(--accent-hover); }
 .library-nav + .sidebar-heading {
   margin-top: 20px;
 }
+.library-nav.hidden + .sidebar-heading {
+  margin-top: 0;
+}
 .provider-logo {
   width: 14px;
   height: 14px;
@@ -1449,6 +1452,10 @@ a:hover { color: var(--accent-hover); }
 }
 
 /* Environment variable table */
+.settings-envtable-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
 .settings-envtable {
   width: 100%;
   border-collapse: collapse;
@@ -1545,9 +1552,14 @@ a:hover { color: var(--accent-hover); }
 @media (max-width: 768px) {
   .sidebar { width: 180px; }
   .items-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  /* Hide Default column on tablets — keep Variable, Current, Description */
+  .settings-envtable-col-default { display: none; }
 }
 @media (max-width: 560px) {
   .app-layout { flex-direction: column; }
   .sidebar { width: 100%; height: auto; border-right: none; border-bottom: 1px solid var(--border-header); }
   .items-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  /* On phones also hide Current — keep Variable and Description only */
+  .settings-envtable-col-current { display: none; }
+  .settings-envtable td:first-child { white-space: normal; }
 }

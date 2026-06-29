@@ -1708,7 +1708,7 @@ class TestSettingsRescan:
 
 class TestSettingsRefreshCache:
     def test_refresh_cache_starts_background_warmup(self, client):
-        with patch('app.web_app._kick_off_cache_warmup') as mock_warmup:
+        with patch('app.web_app.kick_off_cache_warmup') as mock_warmup:
             mock_warmup.return_value = True
             resp = client.post('/api/settings/refresh-cache')
 
@@ -1726,7 +1726,7 @@ class TestApiAuth:
 
     def test_mutating_endpoint_accepts_valid_api_key_header(self, client):
         with patch.dict(os.environ, {'API_KEY': 'secret-key'}), \
-             patch('app.web_app._kick_off_cache_warmup', return_value=True):
+             patch('app.web_app.kick_off_cache_warmup', return_value=True):
             resp = client.post('/api/settings/refresh-cache', headers={'X-Themarr-Api-Key': 'secret-key'})
         assert resp.status_code == 200
 
@@ -1824,7 +1824,7 @@ class TestDisableAuth:
     def test_disable_auth_allows_mutating_requests(self, app):
         with patch.dict(os.environ, {'DISABLE_AUTH': 'true'}):
             with app.test_client() as c:
-                with patch('app.web_app._kick_off_cache_warmup', return_value=True):
+                with patch('app.web_app.kick_off_cache_warmup', return_value=True):
                     resp = c.post('/api/settings/refresh-cache')
         assert resp.status_code == 200
 

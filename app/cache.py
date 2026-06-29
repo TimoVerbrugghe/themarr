@@ -7,10 +7,10 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from app.plex_utils import get_plex, plex_session_get, get_section_base_paths, get_item_local_path
+from app.plex_utils import get_plex, plex_is_configured, plex_session_get, get_section_base_paths, get_item_local_path
 from app.media_utils import scan_local_theme_dirs, _is_video_file_path
 from app.external_ids import extract_external_ids, extract_jellyfin_external_ids
-from app.jellyfin_utils import get_jellyfin, get_jellyfin_user_id, get_jellyfin_item_local_path, _normalize_provider, jellyfin_session_get, serialize_jellyfin_item
+from app.jellyfin_utils import get_jellyfin, get_jellyfin_user_id, get_jellyfin_item_local_path, _normalize_provider, jellyfin_is_configured, jellyfin_session_get, serialize_jellyfin_item, get_jellyfin_libraries
 from app.themerrdb_service import get_themerrdb_theme, get_themerrdb_theme_for_item, get_themerrdb_data_for_context
 from app.theme_state import is_plex_theme_source_unverified
 
@@ -442,4 +442,111 @@ def build_library_items(section_id, include_theme_state=True, provider='plex'):
             provider, section_id, len(result), fetch_duration, time.perf_counter() - started,
         )
     return result
+
+
+# ============================================================
+# Cache warmup
+# ============================================================
+
+def kick_off_cache_warmup():
+    """Invalidate and rebuild the library cache in the background.
+
+    Safe to call at any time — if a rebuild is already running it returns
+    ``False`` without queuing a second one.
+    """
+    global _cache_warmup_future
+    with _startup_warmup_lock:
+        if _cache_warmup_future is not None and not _cache_warmup_future.done():
+            return False
+        invalidate_library_cache()
+        _cache_warmup_future = submit_background_job('library-cache-rebuild', _warm_library_cache)
+        if _cache_warmup_future is None:
+            logger.warning('Failed to queue background job library-cache-rebuild')
+        return _cache_warmup_future is not None
+
+
+def _warm_library_cache():
+    """Background task: pre-load library metadata and theme state, then warm poster cache."""
+    logger.info('Library cache warmup starting…')
+    sections = []
+
+    if plex_is_configured():
+        try:
+            plex = get_plex()
+            for section in plex.library.sections():
+                if section.type in ('show', 'movie'):
+                    sections.append({
+                        'provider': 'plex',
+                        'cache_key': section.key,
+                        'section_id': section.key,
+                        'title': section.title,
+                    })
+        except Exception as exc:
+            logger.warning('Library cache warmup: could not connect to Plex: %s', exc)
+
+    if jellyfin_is_configured():
+        try:
+            for section in get_jellyfin_libraries():
+                section_id = str(section['id'])
+                sections.append({
+                    'provider': 'jellyfin',
+                    'cache_key': f'jellyfin:{section_id}',
+                    'section_id': section_id,
+                    'title': section.get('title') or section_id,
+                })
+        except Exception as exc:
+            logger.warning('Library cache warmup: could not connect to Jellyfin: %s', exc)
+
+    set_theme_hydration_total(len(sections))
+    if not sections:
+        mark_theme_hydration_finished()
+        return
+
+    def warm_section(section_info):
+        provider = section_info['provider']
+        cache_key = section_info['cache_key']
+        section_id = section_info['section_id']
+        section_title = section_info['title']
+        section_lock = get_section_build_lock(cache_key)
+        with section_lock:
+            if get_library_cache_for_section(cache_key) is not None:
+                advance_theme_hydration_progress()
+                return
+            try:
+                items = build_library_items(section_id, include_theme_state=True, provider=provider)
+                set_library_cache_for_section(cache_key, items)
+                logger.info(
+                    'Library cache warmup complete: %s section %s (%s) — %d items',
+                    provider, section_id, section_title, len(items),
+                )
+            except Exception as exc:
+                logger.warning(
+                    'Library cache warmup failed for %s section %s: %s',
+                    provider, section_id, exc,
+                )
+            finally:
+                advance_theme_hydration_progress()
+
+    max_workers = min(4, max(1, len(sections)))
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='library-cache-warm') as executor:
+        futures = [executor.submit(warm_section, s) for s in sections]
+        for future in as_completed(futures):
+            future.result()
+
+    logger.info('Library cache warmup complete.')
+
+    if plex_is_configured():
+        try:
+            plex = get_plex()
+            poster_future = submit_background_job(
+                'poster-cache-warmup',
+                background_warm_poster_cache,
+                plex,
+                item_to_dict,
+            )
+            if poster_future is None:
+                logger.warning('Failed to queue background job poster-cache-warmup')
+        except Exception as exc:
+            logger.warning('Could not kick off poster cache warmup: %s', exc)
+
 

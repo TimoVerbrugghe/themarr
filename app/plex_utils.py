@@ -79,3 +79,17 @@ def get_validated_plex_local_path(item):
     if not local_path:
         return None
     return _validate_local_media_path(local_path)
+
+
+def download_plex_theme_to_path(plex, item, theme_path):
+    """Download Plex theme for *item* and save to *theme_path*. Returns True on success."""
+    url = plex.url(item.theme, includeToken=True)
+    response = plex_session_get(plex, url, stream=True, timeout=30)
+    response.raise_for_status()
+    theme_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(theme_path, 'wb') as fh:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                fh.write(chunk)
+    logger.info('Downloaded Plex theme for %s to %s', item.title, theme_path)
+    return True
