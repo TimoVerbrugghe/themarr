@@ -30,7 +30,7 @@ def app():
 def client(app):
     """Create test client."""
     from app import web_app
-    api_key, _ = web_app._get_api_key()
+    api_key, _ = web_app._get_api_key(web_app._generated_api_key)
     test_client = app.test_client()
     test_client.environ_base['HTTP_X_THEMARR_API_KEY'] = api_key
     return test_client
@@ -239,8 +239,8 @@ class TestCachedThemeStateSync:
 
 class TestSettingsRuntime:
     def test_generated_api_key_warning_does_not_log_secret(self):
-        from app import web_app
-        with patch.object(web_app.logger, 'warning') as mock_warning:
+        from app import web_app, auth
+        with patch.object(auth.logger, 'warning') as mock_warning:
             web_app._log_generated_api_key_warning()
 
         mock_warning.assert_called_once_with(
@@ -1587,15 +1587,15 @@ class TestPlexWebhook:
 class TestPushoverNotification:
     def test_no_op_without_config(self):
         """send_pushover_notification does nothing if env vars are missing."""
-        from app.web_app import send_pushover_notification
-        with patch('app.web_app.http_requests') as mock_req, \
+        from app.notifications import send_pushover_notification
+        with patch('app.notifications.http_requests') as mock_req, \
              patch.dict(os.environ, {}, clear=True):
             send_pushover_notification('Test', 'body')
             mock_req.post.assert_not_called()
 
     def test_sends_with_config(self):
-        from app.web_app import send_pushover_notification
-        with patch('app.web_app.http_requests') as mock_req, \
+        from app.notifications import send_pushover_notification
+        with patch('app.notifications.http_requests') as mock_req, \
              patch.dict(os.environ, {'PUSHOVER_APP_TOKEN': 'tok', 'PUSHOVER_USER_KEY': 'usr'}):
             mock_resp = MagicMock()
             mock_req.post.return_value = mock_resp
@@ -1607,8 +1607,8 @@ class TestPushoverNotification:
         assert data['user'] == 'usr'
 
     def test_handles_request_failure_gracefully(self):
-        from app.web_app import send_pushover_notification
-        with patch('app.web_app.http_requests') as mock_req, \
+        from app.notifications import send_pushover_notification
+        with patch('app.notifications.http_requests') as mock_req, \
              patch.dict(os.environ, {'PUSHOVER_APP_TOKEN': 'tok', 'PUSHOVER_USER_KEY': 'usr'}):
             mock_req.post.side_effect = Exception('Network error')
             # Should not raise

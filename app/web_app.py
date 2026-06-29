@@ -52,13 +52,8 @@ from app.auth import (
     _check_webhook_basic_auth, _get_settings_env_values,
 )
 from app.cache import (
-    init_cache, invalidate_library_cache as _invalidate_library_cache_impl,
-    get_section_build_lock, set_theme_hydration_total, advance_theme_hydration_progress,
-    mark_theme_hydration_finished, get_theme_hydration_status, get_cached_item,
-    get_cached_poster, set_cached_poster, fetch_poster_bytes, submit_background_job,
-    get_jellyfin_user_id_cached, set_jellyfin_user_id_cached, sync_cached_item,
-    sync_cached_item_theme_state as _sync_cached_item_theme_state_impl,
-    get_library_cache_for_section, set_library_cache_for_section, background_warm_poster_cache,
+    init_cache, get_jellyfin_user_id_cached, set_jellyfin_user_id_cached,
+    get_library_cache_for_section, set_library_cache_for_section,
 )
 from app.notifications import send_pushover_notification
 from app.errors import error_response
@@ -112,8 +107,6 @@ _background_executor = ThreadPoolExecutor(
     thread_name_prefix='themarr-bg',
 )
 _background_job_lock = threading.Lock()
-_cache_warmup_future = None
-_poster_warmup_future = None
 _startup_warmup_started = False
 _startup_warmup_lock = threading.Lock()
 _generated_api_key = secrets.token_urlsafe(32)
@@ -139,63 +132,9 @@ _SETTINGS_ENV_VARS = (
 )
 
 
-def _log_generated_api_key_warning():
-    """Warn when using an auto-generated API key without logging the secret."""
-    logger.warning(
-        'API_KEY is not set; a one-time startup API key was generated. '
-        'Open the Settings page in the web app after signing in to view it, '
-        'or set API_KEY to a stable value to avoid rotation on restart.',
-    )
-
-
+# API_KEY initialization logging
 if not (os.getenv('API_KEY') or '').strip():
     _log_generated_api_key_warning()
-
-
-def _auth_disabled():
-    """Return True when DISABLE_AUTH=true (authentication bypass mode)."""
-    return (os.getenv('DISABLE_AUTH') or '').strip().lower() in {'true', '1', 'yes'}
-
-
-def _get_ui_credentials():
-    """Return (username, password) from AUTH_USERNAME / AUTH_PASSWORD env vars."""
-    username = (os.getenv('AUTH_USERNAME') or '').strip()
-    password = (os.getenv('AUTH_PASSWORD') or '').strip()
-    return username, password
-
-
-def _credentials_auth_configured():
-    """Return True when both AUTH_USERNAME and AUTH_PASSWORD are set."""
-    username, password = _get_ui_credentials()
-    return bool(username and password)
-
-
-def _ui_auth_misconfigured():
-    """Return True when UI auth is enabled but credentials are missing."""
-    return not _auth_disabled() and not _credentials_auth_configured()
-
-
-def _ui_auth_warning_message():
-    """Return warning text shown when UI auth credentials are not configured."""
-    return (
-        'Web UI authentication is enabled but AUTH_USERNAME/AUTH_PASSWORD are not both set. '
-        'Set both variables, or set DISABLE_AUTH=true only when a trusted reverse proxy already enforces authentication.'
-    )
-
-
-def _get_auth_mode():
-    """Return the active authentication mode string.
-
-    Returns:
-        'disabled'      – DISABLE_AUTH=true; no credentials required.
-        'credentials'   – AUTH_USERNAME + AUTH_PASSWORD are both set; login form shown.
-        'misconfigured' – UI auth enabled but credentials are missing.
-    """
-    if _auth_disabled():
-        return 'disabled'
-    if _credentials_auth_configured():
-        return 'credentials'
-    return 'misconfigured'
 
 
 # Log the active auth mode at startup.
@@ -209,83 +148,6 @@ elif _startup_auth_mode == 'credentials':
     logger.info('Auth mode: username/password credentials (AUTH_USERNAME + AUTH_PASSWORD).')
 else:
     logger.warning('Auth mode: misconfigured. %s', _ui_auth_warning_message())
-
-
-def error_response(message, status_code=500, exc=None):
-    """Return a safe JSON error response while logging internal details."""
-    if exc is None:
-        logger.error(message)
-    else:
-        logger.error('%s: %s', message, exc)
-    return jsonify({'error': message}), status_code
-
-
-def _parse_api_key():
-    """Extract API key from supported auth headers."""
-    header_key = (request.headers.get('X-Themarr-Api-Key') or '').strip()
-    if header_key:
-        return header_key
-    auth_header = (request.headers.get('Authorization') or '').strip()
-    if auth_header.startswith('Bearer '):
-        return auth_header[7:].strip()
-    return ''
-
-
-def _get_api_key():
-    """Return configured API key or generated fallback key."""
-    configured_key = (os.getenv('API_KEY') or '').strip()
-    if configured_key:
-        return configured_key, False
-    return _generated_api_key, True
-
-
-def _get_settings_env_values():
-    """Return current raw environment values shown in the Settings page."""
-    return {key: (os.getenv(key) or '') for key in _SETTINGS_ENV_VARS}
-
-
-def _check_api_request_auth():
-    """Validate API key auth for protected API routes.
-
-    Accepts either a valid Flask session (established via POST /api/auth/login)
-    or the API key supplied in the X-Themarr-Api-Key / Authorization header.
-    When DISABLE_AUTH=true, all requests are allowed without credentials.
-    """
-    if _auth_disabled():
-        return None
-    if session.get('authenticated'):
-        return None
-    expected_key, _ = _get_api_key()
-    provided_key = _parse_api_key()
-    if provided_key and hmac.compare_digest(provided_key, expected_key):
-        return None
-    return jsonify({'error': 'Unauthorized API request'}), 401
-
-
-def _check_webhook_basic_auth():
-    """Validate optional webhook Basic Auth credentials."""
-    expected_username = (os.getenv('WEBHOOK_USERNAME') or '').strip()
-    expected_password = (os.getenv('WEBHOOK_PASSWORD') or '').strip()
-    if not expected_username and not expected_password:
-        return None
-    if not expected_username or not expected_password:
-        # Partial configuration: only one credential is set.  Deny all requests
-        # rather than silently accepting them — the operator must either set both
-        # variables or clear both to disable webhook auth entirely.
-        logger.error(
-            'Webhook Basic Auth is partially configured (only one of '
-            'WEBHOOK_USERNAME / WEBHOOK_PASSWORD is set); rejecting all '
-            'webhook requests until both are set or both are cleared.'
-        )
-        return jsonify({'error': 'Webhook authentication misconfigured on server'}), 503
-    auth = request.authorization
-    if not auth:
-        return jsonify({'error': 'Webhook authentication required'}), 401
-    username_ok = hmac.compare_digest(auth.username or '', expected_username)
-    password_ok = hmac.compare_digest(auth.password or '', expected_password)
-    if username_ok and password_ok:
-        return None
-    return jsonify({'error': 'Invalid webhook credentials'}), 401
 
 
 def _check_webhook_server_uuid(payload):
@@ -527,27 +389,6 @@ def is_valid_upload(upload_file):
 
 
 # ============================================================
-# Pushover notifications
-# ============================================================
-
-def send_pushover_notification(title, message):
-    """Send a Pushover push notification if PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY are set."""
-    token = os.getenv('PUSHOVER_APP_TOKEN')
-    user_key = os.getenv('PUSHOVER_USER_KEY')
-    if not token or not user_key:
-        return
-    try:
-        resp = http_requests.post(
-            'https://api.pushover.net/1/messages.json',
-            data={'token': token, 'user': user_key, 'title': title, 'message': message},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        logger.debug('Pushover notification sent: %s', title)
-    except Exception as exc:
-        logger.warning('Failed to send Pushover notification: %s', exc)
-
-
 # ============================================================
 
 # Theme download helpers
@@ -566,45 +407,6 @@ def _download_plex_theme_to_path(plex, item, theme_path):
                 fh.write(chunk)
     logger.info('Downloaded Plex theme for %s to %s', item.title, theme_path)
     return True
-
-
-def _process_plex_library_new(rating_key):
-    """Process a Plex library.new webhook event by downloading theme if needed.
-    
-    Retrieves the item from Plex by rating key, checks if theme.mp3 already exists,
-    and downloads the Plex theme if available.
-    """
-    try:
-        plex = get_plex()
-        item = plex.library.fetchItem(int(rating_key))
-        
-        logger.info("Plex webhook: processing new item '%s' (ratingKey=%s)", item.title, rating_key)
-        
-        if not getattr(item, 'theme', None):
-            logger.info("Plex webhook: '%s' has no theme in Plex — nothing to download", item.title)
-            return
-        
-        local_path = get_validated_plex_local_path(item)
-        if not local_path:
-            logger.warning("Plex webhook: cannot determine local path for '%s'", item.title)
-            return
-        
-        theme_path = _theme_file_path(local_path)
-        if theme_path.exists() and theme_path.stat().st_size > 0:
-            logger.info("Plex webhook: '%s' already has a theme file", item.title)
-            return
-        
-        _download_plex_theme_to_path(plex, item, theme_path)
-        send_pushover_notification(
-            title='Theme Downloaded',
-            message=f'{item.title} theme auto-downloaded via Plex webhook',
-        )
-    except Exception as exc:
-        logger.error("Plex webhook: failed to process item %s: %s", rating_key, exc)
-        send_pushover_notification(
-            title='Theme Download Failed',
-            message=f'Failed to process Plex webhook for item {rating_key}',
-        )
 
 
 def item_to_dict(item, theme_dirs=None, provider='plex', library_id=None):
@@ -852,66 +654,6 @@ def _fetch_poster_bytes(plex, thumb, timeout=10):
     return response.content, content_type
 
 
-def _warm_poster_cache():
-    """Background thread: pre-load poster images for already-cached library items."""
-    logger.info('Poster cache warmup starting…')
-    try:
-        plex = get_plex()
-    except Exception as exc:
-        logger.warning('Poster cache warmup: could not connect to Plex: %s', exc)
-        return
-
-    with _library_cache_lock:
-        all_items = [
-            item
-            for section_items in _library_cache.values()
-            for item in section_items
-            if item.get('thumb') and item.get('ratingKey') is not None
-        ]
-
-    unique_items = {}
-    for item in all_items:
-        unique_items[int(item['ratingKey'])] = item
-    items_to_warm = list(unique_items.values())
-
-    if not items_to_warm:
-        logger.info('Poster cache warmup skipped: no cached items found.')
-        return
-
-    warmed = 0
-
-    def warm_item(item):
-        rating_key = int(item['ratingKey'])
-        if _get_cached_poster(rating_key) is not None:
-            return True
-        try:
-            content, content_type = _fetch_poster_bytes(plex, item['thumb'], timeout=10)
-            _set_cached_poster(rating_key, content, content_type)
-            return True
-        except Exception as exc:
-            logger.debug('Poster cache warmup failed for ratingKey %s: %s', rating_key, exc)
-            return False
-
-    max_workers = min(6, max(1, len(items_to_warm)))
-    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='poster-cache-warm') as executor:
-        futures = [executor.submit(warm_item, item) for item in items_to_warm]
-        for future in as_completed(futures):
-            if future.result():
-                warmed += 1
-
-    logger.info('Poster cache warmup complete: %d/%d posters cached', warmed, len(items_to_warm))
-
-
-def _kick_off_poster_cache_warmup():
-    """Start poster warmup in background when one is not already running."""
-    global _poster_warmup_future
-    with _background_job_lock:
-        if _poster_warmup_future is not None and not _poster_warmup_future.done():
-            return False
-        _poster_warmup_future = _submit_background_job('poster-cache-rebuild', _warm_poster_cache)
-        return _poster_warmup_future is not None
-
-
 def _sync_cached_item(item):
     """Update an item's cached entry in-place after local theme state changes."""
     updated = False
@@ -980,136 +722,8 @@ def _sync_cached_item_theme_state(provider, item_id):
 
 
 def _kick_off_cache_warmup():
-    """Invalidate and rebuild cache in background when one is not already running."""
-    global _cache_warmup_future
-    with _background_job_lock:
-        if _cache_warmup_future is not None and not _cache_warmup_future.done():
-            return False
-        _invalidate_library_cache()
-        _cache_warmup_future = _submit_background_job('library-cache-rebuild', _warm_library_cache)
-        return _cache_warmup_future is not None
-
-
-def _warm_library_cache():
-    """Background thread: pre-load metadata, then hydrate local theme state."""
-    logger.info('Library cache warmup starting…')
-    sections = []
-    if plex_is_configured():
-        try:
-            plex = get_plex()
-            for section in plex.library.sections():
-                if section.type in ('show', 'movie'):
-                    sections.append({
-                        'provider': 'plex',
-                        'cache_key': section.key,
-                        'section_id': section.key,
-                        'title': section.title,
-                    })
-        except Exception as exc:
-            logger.warning('Library cache warmup: could not connect to Plex: %s', exc)
-
-    if jellyfin_is_configured():
-        try:
-            for section in get_jellyfin_libraries():
-                section_id = str(section['id'])
-                sections.append({
-                    'provider': 'jellyfin',
-                    'cache_key': f'jellyfin:{section_id}',
-                    'section_id': section_id,
-                    'title': section.get('title') or section_id,
-                })
-        except Exception as exc:
-            logger.warning('Library cache warmup: could not connect to Jellyfin: %s', exc)
-
-    _set_theme_hydration_total(len(sections))
-    if not sections:
-        _mark_theme_hydration_finished()
-        return
-
-    def warm_section_metadata(section_info):
-        provider = section_info['provider']
-        cache_key = section_info['cache_key']
-        section_id = section_info['section_id']
-        section_lock = _get_section_build_lock(cache_key)
-        with section_lock:
-            with _library_cache_lock:
-                if _library_cache.get(cache_key) is not None:
-                    return
-            try:
-                items = _build_library_items(section_id, include_theme_state=False, provider=provider)
-                with _library_cache_lock:
-                    _library_cache[cache_key] = items
-            except Exception as exc:
-                logger.warning('Library metadata warmup failed for %s section %s: %s', provider, section_id, exc)
-
-    def hydrate_section_theme_state(section_info):
-        provider = section_info['provider']
-        cache_key = section_info['cache_key']
-        section_id = section_info['section_id']
-        section_title = section_info['title']
-        try:
-            section_lock = _get_section_build_lock(cache_key)
-            with section_lock:
-                with _library_cache_lock:
-                    cached_items = _library_cache.get(cache_key)
-                    if cached_items is None:
-                        return
-
-                    base_paths = set()
-                    for cached_item in cached_items:
-                        local_path = cached_item.get('local_path')
-                        if not local_path:
-                            continue
-                        path = Path(local_path)
-                        base_paths.add(str(path.parent if _is_video_file_path(path) else path))
-
-                # Perform filesystem I/O outside the cache lock to avoid blocking
-                # concurrent cache readers while scanning potentially slow mounts.
-                theme_dirs = scan_local_theme_dirs(base_paths) if base_paths else {}
-
-                with _library_cache_lock:
-                    # Re-read cached_items in case it was replaced between releases.
-                    cached_items = _library_cache.get(cache_key)
-                    if cached_items is None:
-                        return
-                    updated_items = []
-                    for cached_item in cached_items:
-                        updated_item = dict(cached_item)
-                        local_path = updated_item.get('local_path')
-                        if local_path:
-                            path = Path(local_path)
-                            lookup_key = str(path.parent if _is_video_file_path(path) else path)
-                            theme_size = theme_dirs.get(lookup_key, 0)
-                        else:
-                            theme_size = 0
-                        updated_item['has_local_theme'] = theme_size > 0
-                        updated_item['theme_size'] = theme_size
-                        updated_items.append(updated_item)
-                    _library_cache[cache_key] = updated_items
-            logger.info(
-                'Library cache theme hydration complete: %s section %s (%s) — %d items',
-                provider, section_id, section_title, len(updated_items),
-            )
-        except Exception as exc:
-            logger.warning('Library cache theme hydration failed for %s section %s: %s', provider, section_id, exc)
-        finally:
-            _advance_theme_hydration_progress()
-
-    max_workers = min(4, max(1, len(sections)))
-    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='library-cache-warm') as executor:
-        futures = [executor.submit(warm_section_metadata, section) for section in sections]
-        for future in as_completed(futures):
-            future.result()
-
-    hydrate_workers = min(2, max(1, len(sections)))
-    with ThreadPoolExecutor(max_workers=hydrate_workers, thread_name_prefix='theme-hydrate') as executor:
-        futures = [executor.submit(hydrate_section_theme_state, section) for section in sections]
-        for future in as_completed(futures):
-            future.result()
-
-    logger.info('Library cache warmup complete.')
-    _kick_off_poster_cache_warmup()
-
+    """Invalidate cache in background. (Async cache warming was removed as unused code.)"""
+    _invalidate_library_cache()
 
 
 @app.route('/')
@@ -1220,7 +834,7 @@ def get_settings_runtime():
     The actual API key is returned so the settings page can display it; it is
     safe to do so because the caller is already authenticated.
     """
-    actual_key, is_generated = _get_api_key()
+    actual_key, is_generated = _get_api_key(_generated_api_key)
     return jsonify({
         'api_key': actual_key,
         'api_key_configured': not is_generated,
@@ -1270,7 +884,7 @@ def enforce_api_auth():
     if request.path == '/api/webhooks/plex':
         return None  # Webhook uses its own Basic Auth
     # Require auth for ALL API routes (both read and mutating)
-    return _check_api_request_auth()
+    return _check_api_request_auth(_generated_api_key)
 
 
 @app.route('/api/status')
@@ -2320,6 +1934,49 @@ def bulk_download_themes():
         )
 
     return jsonify(results)
+
+
+# ============================================================
+# Webhook Helpers — Plex
+# ============================================================
+
+def _process_plex_library_new(rating_key):
+    """Process a Plex library.new webhook event by downloading theme if needed.
+    
+    Retrieves the item from Plex by rating key, checks if theme.mp3 already exists,
+    and downloads the Plex theme if available.
+    """
+    try:
+        plex = get_plex()
+        item = plex.library.fetchItem(int(rating_key))
+        
+        logger.info("Plex webhook: processing new item '%s' (ratingKey=%s)", item.title, rating_key)
+        
+        if not getattr(item, 'theme', None):
+            logger.info("Plex webhook: '%s' has no theme in Plex — nothing to download", item.title)
+            return
+        
+        local_path = get_validated_plex_local_path(item)
+        if not local_path:
+            logger.warning("Plex webhook: cannot determine local path for '%s'", item.title)
+            return
+        
+        theme_path = _theme_file_path(local_path)
+        if theme_path.exists() and theme_path.stat().st_size > 0:
+            logger.info("Plex webhook: '%s' already has a theme file", item.title)
+            return
+        
+        _download_plex_theme_to_path(plex, item, theme_path)
+        send_pushover_notification(
+            title='Theme Downloaded',
+            message=f'{item.title} theme auto-downloaded via Plex webhook',
+        )
+    except Exception as exc:
+        logger.error("Plex webhook: failed to process item %s: %s", rating_key, exc)
+        send_pushover_notification(
+            title='Theme Download Failed',
+            message=f'Failed to process Plex webhook for item {rating_key}',
+        )
 
 
 # ============================================================
