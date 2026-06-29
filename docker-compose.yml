@@ -37,7 +37,7 @@ services:
       # Mount your media library directories at the SAME path as in your Plex/Jellyfin container.
       # Themarr uses the paths reported by Plex/Jellyfin to locate files on disk, so the
       # container path here must be identical to the path inside your media-server container.
-      # Replace these examples with your actual library paths (update the environment values above too).
+      # Replace these examples with your actual library paths used by your Plex/Jellyfin container.
       - /media/tvshows:/media/tvshows
       - /media/movies:/media/movies
     ports:
