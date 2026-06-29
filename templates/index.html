@@ -22,7 +22,7 @@
       </div>
       <h2 class="login-title">Web UI authentication is not configured</h2>
       <p class="text-muted">{{ ui_auth_warning_message }}</p>
-      <div class="settings-action-result success" style="display:block; margin-top:1rem;">
+      <div class="settings-action-result settings-action-result-inline success">
         API key generation and API key-based automation remain available via <code>API_KEY</code>.
       </div>
     </div>
@@ -35,15 +35,15 @@
         <img class="logo-image" src="/static/logo-themarr.svg?v={{ asset_version }}" alt="Themarr">
       </a>
       <div class="header-right">
-        <div id="jellyfin-status" class="plex-status plex-status--unknown" style="display:none;">
+        <div id="jellyfin-status" class="plex-status plex-status--unknown hidden">
           <span class="status-dot"></span>
           <span id="jellyfin-status-text">Connecting…</span>
         </div>
-        <div id="plex-status" class="plex-status plex-status--unknown" style="display:none;">
+        <div id="plex-status" class="plex-status plex-status--unknown hidden">
           <span class="status-dot"></span>
           <span id="plex-status-text">Connecting…</span>
         </div>
-        <button id="theme-toggle" class="theme-toggle-btn" onclick="toggleTheme()" title="Toggle theme"></button>
+        <button id="theme-toggle" class="theme-toggle-btn" title="Toggle theme"></button>
       </div>
     </div>
   </header>
@@ -57,7 +57,7 @@
       <h2 class="login-title">Sign in to Themarr</h2>
 
       <!-- Credentials mode (AUTH_USERNAME + AUTH_PASSWORD) -->
-      <form id="login-form-credentials" class="login-form hidden" onsubmit="loginWithCredentials(event)">
+      <form id="login-form-credentials" class="login-form hidden">
         <div class="login-field">
           <label class="login-label" for="login-username">Username</label>
           <input id="login-username" type="text" class="login-input" autocomplete="username" autofocus required>
@@ -102,11 +102,11 @@
       </nav>
       <div class="sidebar-divider"></div>
       <nav class="sidebar-nav-bottom">
-        <a href="#" class="library-nav-item" id="settings-nav-item" onclick="showSettingsPage(event)">
+        <a href="#" class="library-nav-item" id="settings-nav-item">
           <span class="library-nav-icon">⚙️</span>
           <span class="library-nav-name">Settings</span>
         </a>
-        <a href="#" class="library-nav-item hidden" id="logout-nav-item" onclick="logoutFromSidebar(event)">
+        <a href="#" class="library-nav-item hidden" id="logout-nav-item">
           <span class="library-nav-icon">🚪</span>
           <span class="library-nav-name">Logout</span>
         </a>
@@ -132,9 +132,9 @@
             <div id="library-stats" class="library-stats"></div>
           </div>
           <div class="toolbar-controls">
-            <input type="text" id="search-input" class="search-input" placeholder="Search…" aria-label="Search media items" oninput="filterItems()">
+            <input type="text" id="search-input" class="search-input" placeholder="Search…" aria-label="Search media items">
             <div class="filter-wrapper">
-              <button class="filter-icon-btn" id="filter-icon-btn" onclick="toggleFilterPanel(event)" title="Filter options" aria-haspopup="true" aria-expanded="false">
+              <button class="filter-icon-btn" id="filter-icon-btn" title="Filter options" aria-haspopup="true" aria-expanded="false">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="1" y1="4" x2="15" y2="4"/><line x1="3" y1="8" x2="13" y2="8"/><line x1="5" y1="12" x2="11" y2="12"/></svg>
                 Filter
                 <span id="filter-active-badge" class="filter-active-badge hidden">0</span>
@@ -145,13 +145,13 @@
                   <div class="filter-section-label">Theme status</div>
                   <div class="filter-radio-group">
                     <label class="filter-option">
-                      <input type="radio" name="filter-theme" value="all" checked onchange="applyFilters()"> All
+                      <input type="radio" name="filter-theme" value="all" checked> All
                     </label>
                     <label class="filter-option">
-                      <input type="radio" name="filter-theme" value="has_theme" onchange="applyFilters()"> Has theme
+                      <input type="radio" name="filter-theme" value="has_theme"> Has theme
                     </label>
                     <label class="filter-option">
-                      <input type="radio" name="filter-theme" value="no_theme" onchange="applyFilters()"> No theme
+                      <input type="radio" name="filter-theme" value="no_theme"> No theme
                     </label>
                   </div>
                 </div>
@@ -159,29 +159,29 @@
                   <div class="filter-section-label">Source availability</div>
                   <div class="filter-check-group">
                     <label id="filter-plex-option" class="filter-option">
-                      <input type="checkbox" id="filter-plex-avail" onchange="applyFilters()">
+                      <input type="checkbox" id="filter-plex-avail">
                       <img src="https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/plex.svg" alt="" class="filter-option-logo" aria-hidden="true">
                       Plex theme available
                     </label>
                     <label class="filter-option">
-                      <input type="checkbox" id="filter-themerrdb-avail" onchange="applyFilters()">
+                      <input type="checkbox" id="filter-themerrdb-avail">
                       <img src="https://app.lizardbyte.dev/ThemerrDB/assets/img/navbar-avatar.png" alt="" class="filter-option-logo" aria-hidden="true">
                       ThemerrDB theme available
                     </label>
                   </div>
                 </div>
                 <div class="filter-panel-footer">
-                  <button class="filter-clear-btn" onclick="clearFilters()">Clear filters</button>
+                  <button id="filter-clear-btn" class="filter-clear-btn">Clear filters</button>
                 </div>
               </div>
             </div>
             <label class="select-all-label">
-              <input type="checkbox" id="select-all-check" onchange="toggleSelectAll(this.checked)">
+              <input type="checkbox" id="select-all-check">
               Select all
             </label>
             <div class="view-toggle">
-              <button class="btn btn-sm btn-secondary" id="view-btn-grid" title="Poster view" onclick="setView('grid')">⊞</button>
-              <button class="btn btn-sm btn-secondary" id="view-btn-list" title="List view" onclick="setView('list')">☰</button>
+              <button class="btn btn-sm btn-secondary" id="view-btn-grid" title="Poster view">⊞</button>
+              <button class="btn btn-sm btn-secondary" id="view-btn-list" title="List view">☰</button>
             </div>
           </div>
         </div>
@@ -190,8 +190,8 @@
         <div id="bulk-bar" class="bulk-bar hidden">
           <span class="bulk-bar-count" id="bulk-count">0 selected</span>
           <div class="bulk-bar-actions">
-            <button id="btn-bulk-download" class="btn btn-sm btn-primary" onclick="bulkDownload()">↓ Download Themes</button>
-            <button class="btn btn-sm btn-secondary" onclick="deselectAll()">✕ Clear selection</button>
+            <button id="btn-bulk-download" class="btn btn-sm btn-primary">↓ Download Themes</button>
+            <button id="btn-bulk-clear" class="btn btn-sm btn-secondary">✕ Clear selection</button>
           </div>
         </div>
 
@@ -210,19 +210,19 @@
         <div class="settings-section">
           <h2 class="settings-section-title">Actions</h2>
           <div class="settings-actions">
-            <button id="settings-test-plex-btn" class="btn btn-secondary settings-action-btn" onclick="settingsTestPlex()">
+            <button id="settings-test-plex-btn" class="btn btn-secondary settings-action-btn">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M11.916 0C5.333 0 0 5.333 0 11.916s5.333 11.916 11.916 11.916 11.916-5.333 11.916-11.916S18.499 0 11.916 0zm1.501 16.14L9.143 12l4.274-4.14 1.263.865-3.25 3.275 3.25 3.275z"/></svg>
               Test Plex Connectivity
             </button>
-            <button class="btn btn-secondary settings-action-btn" onclick="settingsRefreshLibraries()">
+            <button id="settings-refresh-libraries-btn" class="btn btn-secondary settings-action-btn">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z"/></svg>
               Refresh Libraries
             </button>
-            <button class="btn btn-secondary settings-action-btn" onclick="settingsTestPushover()">
+            <button id="settings-test-pushover-btn" class="btn btn-secondary settings-action-btn">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1z"/></svg>
               Test Pushover
             </button>
-            <button class="btn btn-secondary settings-action-btn" onclick="settingsRescan()">
+            <button id="settings-rescan-btn" class="btn btn-secondary settings-action-btn">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
               Rescan Files
             </button>
@@ -236,7 +236,7 @@
             <label class="settings-api-key-label" for="runtime-api-key">API Key</label>
             <div class="settings-api-key-row">
               <input id="runtime-api-key" class="settings-api-key-input" type="text" value="Loading…" readonly>
-              <button class="settings-api-key-copy-btn" type="button" onclick="copyApiKey()" title="Copy API key" aria-label="Copy API key">
+              <button id="settings-api-key-copy-btn" class="settings-api-key-copy-btn" type="button" title="Copy API key" aria-label="Copy API key">
                 <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1zm4 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h12v14z"/></svg>
               </button>
             </div>
@@ -292,11 +292,11 @@
        ============================================================ -->
 
   <!-- Download from Plex modal -->
-  <div id="modal-download" class="modal-overlay hidden" onclick="closeModal('modal-download', event)">
+  <div id="modal-download" class="modal-overlay hidden">
     <div class="modal">
       <div class="modal-header">
         <h3>Download Theme from Plex</h3>
-        <button class="modal-close" onclick="closeModal('modal-download')">&times;</button>
+        <button class="modal-close" data-modal-close="modal-download">&times;</button>
       </div>
       <div class="modal-body">
         <p id="modal-download-message"></p>
@@ -317,18 +317,18 @@
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeModal('modal-download')">Cancel</button>
-        <button id="btn-confirm-download" class="btn btn-primary" onclick="confirmDownload()">Download</button>
+        <button class="btn btn-secondary" data-modal-close="modal-download">Cancel</button>
+        <button id="btn-confirm-download" class="btn btn-primary">Download</button>
       </div>
     </div>
   </div>
 
   <!-- Copy theme modal -->
-  <div id="modal-copy-theme" class="modal-overlay hidden" onclick="closeModal('modal-copy-theme', event)">
+  <div id="modal-copy-theme" class="modal-overlay hidden">
     <div class="modal">
       <div class="modal-header">
         <h3>Copy Theme From…</h3>
-        <button class="modal-close" onclick="closeModal('modal-copy-theme')">&times;</button>
+        <button class="modal-close" data-modal-close="modal-copy-theme">&times;</button>
       </div>
       <div class="modal-body">
         <p>Select a source movie or TV show whose local <code>theme.mp3</code> should be copied to <strong id="copy-target-item-title"></strong>.</p>
@@ -359,24 +359,24 @@
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeModal('modal-copy-theme')">Cancel</button>
-        <button id="btn-confirm-copy-theme" class="btn btn-primary" onclick="confirmCopyTheme()">Copy Theme</button>
+        <button class="btn btn-secondary" data-modal-close="modal-copy-theme">Cancel</button>
+        <button id="btn-confirm-copy-theme" class="btn btn-primary">Copy Theme</button>
       </div>
     </div>
   </div>
 
   <!-- Upload modal -->
-  <div id="modal-upload" class="modal-overlay hidden" onclick="closeModal('modal-upload', event)">
+  <div id="modal-upload" class="modal-overlay hidden">
     <div class="modal">
       <div class="modal-header">
         <h3>Upload Theme File</h3>
-        <button class="modal-close" onclick="closeModal('modal-upload')">&times;</button>
+        <button class="modal-close" data-modal-close="modal-upload">&times;</button>
       </div>
       <div class="modal-body">
         <p>Upload an MP3 file to use as the theme for <strong id="upload-item-title"></strong>.</p>
         <div class="file-upload-area" id="file-drop-area">
-          <input type="file" id="upload-file-input" accept="audio/*,.mp3" onchange="handleFileSelect(event)">
-          <div class="file-upload-label" onclick="document.getElementById('upload-file-input').click()">
+          <input type="file" id="upload-file-input" accept="audio/*,.mp3">
+          <div id="upload-file-label" class="file-upload-label">
             <span class="upload-icon">📁</span>
             <span>Click to select or drag &amp; drop an MP3 file</span>
           </div>
@@ -394,18 +394,18 @@
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeModal('modal-upload')">Cancel</button>
-        <button id="btn-confirm-upload" class="btn btn-primary" onclick="confirmUpload()">Upload</button>
+        <button class="btn btn-secondary" data-modal-close="modal-upload">Cancel</button>
+        <button id="btn-confirm-upload" class="btn btn-primary">Upload</button>
       </div>
     </div>
   </div>
 
   <!-- YouTube modal -->
-  <div id="modal-youtube" class="modal-overlay hidden" onclick="closeModal('modal-youtube', event)">
+  <div id="modal-youtube" class="modal-overlay hidden">
     <div class="modal modal-lg">
       <div class="modal-header">
         <h3>Download from YouTube</h3>
-        <button class="modal-close" onclick="closeModal('modal-youtube')">&times;</button>
+        <button class="modal-close" data-modal-close="modal-youtube">&times;</button>
       </div>
       <div class="modal-body">
         <p>Select a result below to download as the theme for <strong id="youtube-item-title"></strong>.</p>
@@ -413,7 +413,7 @@
         <!-- Search bar -->
         <div class="yt-search-bar">
           <input type="text" id="youtube-search-input" class="form-control" placeholder="Search YouTube…">
-          <button class="btn btn-secondary btn-sm" onclick="doYoutubeSearch()">🔍 Search</button>
+          <button id="youtube-search-btn" class="btn btn-secondary btn-sm">🔍 Search</button>
         </div>
 
         <!-- Search results -->
@@ -442,18 +442,18 @@
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeModal('modal-youtube')">Cancel</button>
-        <button id="btn-confirm-youtube" class="btn btn-primary" onclick="confirmYoutube()">Download</button>
+        <button class="btn btn-secondary" data-modal-close="modal-youtube">Cancel</button>
+        <button id="btn-confirm-youtube" class="btn btn-primary">Download</button>
       </div>
     </div>
   </div>
 
   <!-- ThemerrDB modal -->
-  <div id="modal-themerrdb" class="modal-overlay hidden" onclick="closeModal('modal-themerrdb', event)">
+  <div id="modal-themerrdb" class="modal-overlay hidden">
     <div class="modal modal-lg">
       <div class="modal-header">
         <h3>Download from ThemerrDB</h3>
-        <button class="modal-close" onclick="closeModal('modal-themerrdb')">&times;</button>
+        <button class="modal-close" data-modal-close="modal-themerrdb">&times;</button>
       </div>
       <div class="modal-body">
         <p>Theme preview for <strong id="themerrdb-item-title"></strong>:</p>
@@ -476,37 +476,37 @@
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeModal('modal-themerrdb')">Cancel</button>
-        <button id="btn-confirm-themerrdb" class="btn btn-primary" onclick="confirmThemerrdb()">Download</button>
+        <button class="btn btn-secondary" data-modal-close="modal-themerrdb">Cancel</button>
+        <button id="btn-confirm-themerrdb" class="btn btn-primary">Download</button>
       </div>
     </div>
   </div>
 
   <!-- Get Theme source selection modal -->
-  <div id="modal-get-theme" class="modal-overlay hidden" onclick="closeModal('modal-get-theme', event)">
+  <div id="modal-get-theme" class="modal-overlay hidden">
     <div class="modal modal-sm">
       <div class="modal-header">
         <h3>Get Theme</h3>
-        <button class="modal-close" onclick="closeModal('modal-get-theme')">&times;</button>
+        <button class="modal-close" data-modal-close="modal-get-theme">&times;</button>
       </div>
       <div class="modal-body">
         <p>From which source would you like to download a theme?</p>
         <div class="get-theme-sources">
-          <button id="get-theme-btn-plex" class="get-theme-source-btn" onclick="getThemeSelectSource('plex')">
+          <button id="get-theme-btn-plex" class="get-theme-source-btn">
             <img src="https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/plex.svg" alt="Plex" class="source-logo">
             <div class="source-info">
               <span class="source-name">Plex</span>
               <span id="get-theme-plex-status" class="source-status">Checking…</span>
             </div>
           </button>
-          <button id="get-theme-btn-themerrdb" class="get-theme-source-btn" onclick="getThemeSelectSource('themerrdb')">
+          <button id="get-theme-btn-themerrdb" class="get-theme-source-btn">
             <img src="https://app.lizardbyte.dev/ThemerrDB/assets/img/navbar-avatar.png" alt="ThemerrDB" class="source-logo">
             <div class="source-info">
               <span class="source-name">ThemerrDB</span>
               <span id="get-theme-themerrdb-status" class="source-status">Checking…</span>
             </div>
           </button>
-          <button id="get-theme-btn-youtube" class="get-theme-source-btn" onclick="getThemeSelectSource('youtube')">
+          <button id="get-theme-btn-youtube" class="get-theme-source-btn">
             <svg class="source-logo" viewBox="0 0 24 24" fill="var(--youtube, #ff0000)" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
             <div class="source-info">
               <span class="source-name">YouTube</span>
@@ -516,43 +516,43 @@
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeModal('modal-get-theme')">Cancel</button>
+        <button class="btn btn-secondary" data-modal-close="modal-get-theme">Cancel</button>
       </div>
     </div>
   </div>
 
   <!-- Delete confirmation modal -->
-  <div id="modal-delete" class="modal-overlay hidden" onclick="closeModal('modal-delete', event)">
+  <div id="modal-delete" class="modal-overlay hidden">
     <div class="modal modal-sm">
       <div class="modal-header">
         <h3>Delete Theme</h3>
-        <button class="modal-close" onclick="closeModal('modal-delete')">&times;</button>
+        <button class="modal-close" data-modal-close="modal-delete">&times;</button>
       </div>
       <div class="modal-body">
         <p>Are you sure you want to delete the theme for <strong id="delete-item-title"></strong>?</p>
         <p class="text-muted">This action cannot be undone.</p>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeModal('modal-delete')">Cancel</button>
-        <button class="btn btn-danger" onclick="confirmDelete()">Delete</button>
+        <button class="btn btn-secondary" data-modal-close="modal-delete">Cancel</button>
+        <button id="btn-confirm-delete" class="btn btn-danger">Delete</button>
       </div>
     </div>
   </div>
 
   <!-- Bulk overwrite confirmation modal -->
-  <div id="modal-bulk-overwrite" class="modal-overlay hidden" onclick="closeModal('modal-bulk-overwrite', event)">
+  <div id="modal-bulk-overwrite" class="modal-overlay hidden">
     <div class="modal modal-sm">
       <div class="modal-header">
         <h3>Overwrite existing themes?</h3>
-        <button class="modal-close" onclick="closeModal('modal-bulk-overwrite')">&times;</button>
+        <button class="modal-close" data-modal-close="modal-bulk-overwrite">&times;</button>
       </div>
       <div class="modal-body">
         <p id="modal-bulk-overwrite-message"></p>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeModal('modal-bulk-overwrite')">Cancel</button>
-        <button class="btn btn-secondary" onclick="confirmBulkDownload(false)">Skip existing</button>
-        <button class="btn btn-primary" onclick="confirmBulkDownload(true)">Overwrite</button>
+        <button class="btn btn-secondary" data-modal-close="modal-bulk-overwrite">Cancel</button>
+        <button id="btn-confirm-bulk-skip" class="btn btn-secondary">Skip existing</button>
+        <button id="btn-confirm-bulk-overwrite" class="btn btn-primary">Overwrite</button>
       </div>
     </div>
   </div>
@@ -561,14 +561,6 @@
   <div id="toast-container" class="toast-container"></div>
 
   <script src="/static/js/app.js?v={{ asset_version }}"></script>
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', function() {
-        navigator.serviceWorker.register('/static/js/sw.js')
-          .catch(function(err) { console.error('Service worker registration failed:', err); });
-      });
-    }
-  </script>
   {% endif %}
 </body>
 </html>

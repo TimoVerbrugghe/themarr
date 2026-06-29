@@ -159,6 +159,7 @@ async function loginWithCredentials(event) {
 /** Called after successful login to resume the startup flow. */
 async function postLoginInit() {
   await refreshApiKey();
+  await checkConnectionStatuses();
   await waitForStartupHydration();
   loadLibraries();
 }
@@ -305,9 +306,69 @@ function handleActionMenuBreakpointChange() {
 // Init
 // ============================================================
 document.addEventListener('DOMContentLoaded', async () => {
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/static/js/sw.js')
+        .catch((err) => { console.error('Service worker registration failed:', err); });
+    });
+  }
+
   initTheme();
   setView(currentView);  // apply default view and sync button active states
-  checkConnectionStatuses();
+
+  const bindIfPresent = (id, eventName, handler) => {
+    const element = document.getElementById(id);
+    if (element) element.addEventListener(eventName, handler);
+  };
+
+  const loginForm = document.getElementById('login-form-credentials');
+  if (loginForm) {
+    loginForm.addEventListener('submit', loginWithCredentials);
+  }
+  bindIfPresent('theme-toggle', 'click', toggleTheme);
+  bindIfPresent('settings-nav-item', 'click', showSettingsPage);
+  bindIfPresent('logout-nav-item', 'click', logoutFromSidebar);
+  bindIfPresent('search-input', 'input', filterItems);
+  bindIfPresent('filter-icon-btn', 'click', toggleFilterPanel);
+  bindIfPresent('filter-clear-btn', 'click', clearFilters);
+  bindIfPresent('select-all-check', 'change', (event) => toggleSelectAll(event.target.checked));
+  bindIfPresent('view-btn-grid', 'click', () => setView('grid'));
+  bindIfPresent('view-btn-list', 'click', () => setView('list'));
+  bindIfPresent('btn-bulk-download', 'click', bulkDownload);
+  bindIfPresent('btn-bulk-clear', 'click', deselectAll);
+  bindIfPresent('settings-test-plex-btn', 'click', settingsTestPlex);
+  bindIfPresent('settings-refresh-libraries-btn', 'click', settingsRefreshLibraries);
+  bindIfPresent('settings-test-pushover-btn', 'click', settingsTestPushover);
+  bindIfPresent('settings-rescan-btn', 'click', settingsRescan);
+  bindIfPresent('settings-api-key-copy-btn', 'click', copyApiKey);
+  bindIfPresent('btn-confirm-download', 'click', confirmDownload);
+  bindIfPresent('btn-confirm-copy-theme', 'click', confirmCopyTheme);
+  bindIfPresent('btn-confirm-upload', 'click', confirmUpload);
+  bindIfPresent('youtube-search-btn', 'click', doYoutubeSearch);
+  bindIfPresent('btn-confirm-youtube', 'click', confirmYoutube);
+  bindIfPresent('btn-confirm-themerrdb', 'click', confirmThemerrdb);
+  bindIfPresent('btn-confirm-delete', 'click', confirmDelete);
+  bindIfPresent('btn-confirm-bulk-skip', 'click', () => confirmBulkDownload(false));
+  bindIfPresent('btn-confirm-bulk-overwrite', 'click', () => confirmBulkDownload(true));
+  bindIfPresent('get-theme-btn-plex', 'click', () => getThemeSelectSource('plex'));
+  bindIfPresent('get-theme-btn-themerrdb', 'click', () => getThemeSelectSource('themerrdb'));
+  bindIfPresent('get-theme-btn-youtube', 'click', () => getThemeSelectSource('youtube'));
+  bindIfPresent('upload-file-input', 'change', handleFileSelect);
+  bindIfPresent('upload-file-label', 'click', () => {
+    const fileInput = document.getElementById('upload-file-input');
+    if (fileInput) fileInput.click();
+  });
+
+  document.querySelectorAll('input[name="filter-theme"]').forEach((radio) => {
+    radio.addEventListener('change', applyFilters);
+  });
+  document.querySelectorAll('[data-modal-close]').forEach((btn) => {
+    btn.addEventListener('click', () => closeModal(btn.dataset.modalClose));
+  });
+  document.querySelectorAll('.modal-overlay').forEach((overlay) => {
+    overlay.addEventListener('click', (event) => closeModal(overlay.id, event));
+  });
+
   document.addEventListener('click', () => closeAllRowActionMenus());
   lastCompactActionMenuMode = isCompactActionMenuMode();
   window.addEventListener('resize', handleActionMenuBreakpointChange);
@@ -368,6 +429,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // Already authenticated (or auth disabled) — proceed with normal startup.
+  await checkConnectionStatuses();
   try {
     await refreshApiKey();
   } catch (err) {
@@ -467,7 +529,7 @@ function setProviderConnectionStatus(providerName, status, statusElementId, stat
   if (!el || !txt) return;
 
   const shouldShow = Boolean(status?.url_configured);
-  el.style.display = shouldShow ? 'flex' : 'none';
+  el.classList.toggle('hidden', !shouldShow);
   if (!shouldShow) return;
 
   if (status?.connected) {
@@ -648,7 +710,7 @@ function renderItems(items) {
   });
 
   if (!filtered.length) {
-    grid.innerHTML = '<div class="items-loading" style="grid-column:1/-1"><span>No items match your filter.</span></div>';
+    grid.innerHTML = '<div class="items-loading items-loading-fullrow"><span>No items match your filter.</span></div>';
     return;
   }
 
@@ -881,24 +943,18 @@ function createItemRow(item) {
   actionMenuToggle.textContent = 'Actions';
   actionMenuToggle.addEventListener('click', (e) => {
     e.stopPropagation();
-    const compactMode = isCompactActionMenuMode();
-    const shouldOpen = compactMode ? actionMenu.style.display === 'none' || actionMenu.style.display === '' : !actions.classList.contains('open');
+    const shouldOpen = !actions.classList.contains('open');
     closeAllRowActionMenus(actions);
     if (shouldOpen) {
       actions.classList.add('open');
-      if (compactMode) actionMenu.style.display = 'flex';
     } else {
       actions.classList.remove('open');
-      if (compactMode) actionMenu.style.display = 'none';
     }
   });
   actions.appendChild(actionMenuToggle);
 
   const actionMenu = document.createElement('div');
   actionMenu.className = 'item-actions-menu';
-  if (isCompactActionMenuMode()) {
-    actionMenu.style.display = 'none';
-  }
   actionMenu.addEventListener('click', (e) => e.stopPropagation());
 
   // Button order: Get Theme → Copy theme from → Upload → Delete
@@ -941,10 +997,6 @@ function closeAllRowActionMenus(except = null) {
   document.querySelectorAll('.item-actions-disclosure.open').forEach((menu) => {
     if (menu === except) return;
     menu.classList.remove('open');
-    if (isCompactActionMenuMode()) {
-      const panel = menu.querySelector('.item-actions-menu');
-      if (panel) panel.style.display = 'none';
-    }
   });
 }
 
@@ -1438,7 +1490,7 @@ async function openThemerrdbModal(item) {
     // Show preview player
     previewContainer.innerHTML = `
       <div class="preview-player">
-        <audio controls style="width: 100%;">
+        <audio controls>
           <source src="${basePath}/preview" type="audio/mpeg">
           Your browser does not support the audio element.
         </audio>

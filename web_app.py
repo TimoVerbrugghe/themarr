@@ -1538,8 +1538,9 @@ def add_security_headers(response):
         'Content-Security-Policy',
         "default-src 'self'; "
         "script-src 'self'; "
-        "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data: https://cdn.jsdelivr.net https://app.lizardbyte.dev; "
+        "style-src 'self'; "
+        "img-src 'self' data: https://cdn.jsdelivr.net https://app.lizardbyte.dev "
+        "https://i.ytimg.com https://*.ytimg.com https://img.youtube.com; "
         "media-src 'self' blob: https://*.googlevideo.com; "
         "frame-src https://www.youtube-nocookie.com; "
         "connect-src 'self'; "

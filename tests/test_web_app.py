@@ -1335,6 +1335,17 @@ class TestIndexPage:
         assert b'id="items-grid"' in resp.data
         assert b'/static/js/app.js' in resp.data
 
+    def test_index_avoids_inline_script_handlers_for_csp(self, client):
+        with patch.dict(os.environ, {'AUTH_USERNAME': 'admin', 'AUTH_PASSWORD': 'secret', 'DISABLE_AUTH': ''}):
+            resp = client.get('/')
+        assert resp.status_code == 200
+        assert b' onclick=' not in resp.data
+        assert b' onchange=' not in resp.data
+        assert b' oninput=' not in resp.data
+        assert b' onsubmit=' not in resp.data
+        assert b' style=' not in resp.data
+        assert b'<script>' not in resp.data
+
     def test_index_shows_warning_when_auth_credentials_missing(self, client):
         with patch.dict(os.environ, {'AUTH_USERNAME': '', 'AUTH_PASSWORD': '', 'DISABLE_AUTH': ''}):
             resp = client.get('/')
@@ -1962,12 +1973,18 @@ class TestSecurityHeaders:
         assert resp.headers.get('X-Frame-Options') == 'DENY'
         assert 'Referrer-Policy' in resp.headers
         assert 'Content-Security-Policy' in resp.headers
+        csp = resp.headers.get('Content-Security-Policy', '')
+        assert "'unsafe-inline'" not in csp
+        assert "style-src 'self';" in csp
+        assert 'https://i.ytimg.com' in csp
 
     def test_security_headers_on_html_response(self, app):
         with app.test_client() as c:
             resp = c.get('/')
         assert resp.headers.get('X-Content-Type-Options') == 'nosniff'
         assert resp.headers.get('X-Frame-Options') == 'DENY'
+        csp = resp.headers.get('Content-Security-Policy', '')
+        assert "'unsafe-inline'" not in csp
 
 
 class TestMp3MagicByte:
@@ -2010,5 +2027,3 @@ class TestThemerrDbCacheKey:
         key_typed = web_app._get_themerrdb_cache_key('tt1234567', 'movies')
         key_untyped = web_app._get_themerrdb_cache_key('tt1234567')
         assert key_typed != key_untyped
-
-
