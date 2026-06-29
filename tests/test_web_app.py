@@ -1976,7 +1976,17 @@ class TestSecurityHeaders:
         csp = resp.headers.get('Content-Security-Policy', '')
         assert "'unsafe-inline'" not in csp
         assert "style-src 'self';" in csp
-        assert 'https://i.ytimg.com' in csp
+
+        directives = {}
+        for raw_directive in csp.split(';'):
+            directive = raw_directive.strip()
+            if not directive:
+                continue
+            parts = directive.split()
+            if parts:
+                directives[parts[0]] = parts[1:]
+
+        assert 'https://i.ytimg.com' in directives.get('img-src', [])
 
     def test_security_headers_on_html_response(self, app):
         with app.test_client() as c:
