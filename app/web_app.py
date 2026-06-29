@@ -40,6 +40,9 @@ from app.plex_utils import (
 )
 from app.jellyfin_utils import (
     jellyfin_is_configured, get_jellyfin, get_jellyfin_item_local_path, _normalize_provider,
+    JELLYFIN_TIMEOUT_SECONDS, jellyfin_session_get, jellyfin_session_post,
+    get_jellyfin_user_id, get_jellyfin_library_count, get_jellyfin_libraries,
+    get_jellyfin_item, serialize_jellyfin_item, reset_jellyfin_user_id_cache,
 )
 from app.auth import (
     _log_generated_api_key_warning, _auth_disabled, _get_ui_credentials,
@@ -69,7 +72,6 @@ MAX_BULK_ITEMS = 100
 ASSET_VERSION = str(int(time.time()))
 PLEX_RETRY_ATTEMPTS_DEFAULT = 10
 PLEX_RETRY_DELAY_DEFAULT = 30  # seconds between retry attempts
-JELLYFIN_TIMEOUT_SECONDS = 30
 THEMERRDB_API_BASE = 'https://app.lizardbyte.dev/ThemerrDB'
 THEMERRDB_CACHE_TTL = 24 * 3600  # 24 hours
 LIBRARY_PAGE_SIZE_DEFAULT = 200
@@ -111,8 +113,6 @@ _theme_hydration_status = {
     'sections_completed': 0,
 }
 _theme_hydration_status_lock = threading.Lock()
-_jellyfin_user_id_cache = {'value': None}
-_jellyfin_user_id_lock = threading.Lock()
 _background_executor = ThreadPoolExecutor(
     max_workers=BACKGROUND_WORKER_COUNT,
     thread_name_prefix='themarr-bg',
@@ -378,145 +378,6 @@ def _ensure_startup_warmup():
     _kick_off_cache_warmup()
 
 
-def jellyfin_session_get(jellyfin, path, **kwargs):
-    """Perform an authenticated GET against Jellyfin."""
-    headers = dict(kwargs.pop('headers', {}) or {})
-    headers['X-Emby-Token'] = jellyfin['api_key']
-    url = f"{jellyfin['url']}{path}"
-    kwargs.setdefault('timeout', JELLYFIN_TIMEOUT_SECONDS)
-    return http_requests.get(url, headers=headers, **kwargs)
-
-
-def jellyfin_session_post(jellyfin, path, **kwargs):
-    """Perform an authenticated POST against Jellyfin."""
-    headers = dict(kwargs.pop('headers', {}) or {})
-    headers['X-Emby-Token'] = jellyfin['api_key']
-    url = f"{jellyfin['url']}{path}"
-    kwargs.setdefault('timeout', JELLYFIN_TIMEOUT_SECONDS)
-    return http_requests.post(url, headers=headers, **kwargs)
-
-
-def get_jellyfin_user_id(jellyfin):
-    """Resolve Jellyfin user id from env or Jellyfin users API."""
-    explicit_user_id = jellyfin.get('user_id')
-    if explicit_user_id:
-        return explicit_user_id
-
-    with _jellyfin_user_id_lock:
-        cached_user_id = _jellyfin_user_id_cache.get('value')
-        if cached_user_id:
-            return cached_user_id
-
-        response = jellyfin_session_get(jellyfin, '/Users')
-        response.raise_for_status()
-        users = response.json()
-        if not isinstance(users, list) or not users:
-            raise ValueError('Jellyfin did not return any users; set JELLYFIN_USER_ID explicitly')
-
-        user_id = users[0].get('Id')
-        if not user_id:
-            raise ValueError('Failed to resolve Jellyfin user id from /Users response')
-
-        _jellyfin_user_id_cache['value'] = user_id
-        return user_id
-
-
-def _serialize_jellyfin_item(item, library_id, theme_dirs=None):
-    local_path = get_jellyfin_item_local_path(item)
-    theme_exists = False
-    theme_size = 0
-    if local_path:
-        if theme_dirs is not None:
-            theme_size = theme_dirs.get(str(local_path), 0)
-            theme_exists = theme_size > 0
-
-    item_type = (item.get('Type') or '').lower()
-    media_type = 'show' if item_type == 'series' else 'movie'
-    external_ids = extract_jellyfin_external_ids(item)
-    has_themerrdb_theme = False
-    if external_ids['imdb'] or external_ids['tmdb'] or external_ids['tvdb']:
-        themerrdb_data = get_themerrdb_theme_for_item('jellyfin', item)
-        has_themerrdb_theme = themerrdb_data is not None
-    item_id = str(item.get('Id'))
-    return {
-        'id': item_id,
-        'ratingKey': item_id,
-        'provider': 'jellyfin',
-        'library_id': str(library_id),
-        'title': item.get('Name'),
-        'year': item.get('ProductionYear'),
-        'thumb': None,
-        'type': media_type,
-        'has_plex_theme': False,
-        'plex_theme_source_unverified': False,
-        'has_local_theme': theme_exists,
-        'has_themerrdb_theme': has_themerrdb_theme,
-        'theme_size': theme_size,
-        'local_path': str(local_path) if local_path else None,
-        'external_ids': external_ids,
-    }
-
-
-def _get_jellyfin_library_count(jellyfin, user_id, library_id):
-    """Return item count for a Jellyfin TV/Movie library."""
-    response = jellyfin_session_get(
-        jellyfin,
-        f'/Users/{user_id}/Items',
-        params={
-            'ParentId': str(library_id),
-            'IncludeItemTypes': 'Series,Movie',
-            'Recursive': 'true',
-            'Limit': 1,
-        },
-    )
-    response.raise_for_status()
-    payload = response.json()
-    return int(payload.get('TotalRecordCount', 0))
-
-
-def _get_jellyfin_libraries():
-    """Return Jellyfin TV and Movie libraries."""
-    jellyfin = get_jellyfin()
-    user_id = get_jellyfin_user_id(jellyfin)
-    response = jellyfin_session_get(jellyfin, '/Library/VirtualFolders')
-    response.raise_for_status()
-    folders = response.json()
-
-    result = []
-    for folder in folders:
-        collection_type = (folder.get('CollectionType') or '').lower()
-        if collection_type not in {'tvshows', 'movies'}:
-            continue
-        library_id = folder.get('ItemId') or folder.get('Id')
-        if not library_id:
-            continue
-        media_type = 'show' if collection_type == 'tvshows' else 'movie'
-        total_size = _get_jellyfin_library_count(jellyfin, user_id, library_id)
-        result.append({
-            'id': str(library_id),
-            'key': str(library_id),
-            'title': folder.get('Name') or 'Unnamed Library',
-            'type': media_type,
-            'thumb': None,
-            'totalSize': total_size,
-            'provider': 'jellyfin',
-        })
-    return result
-
-
-def _get_jellyfin_item(jellyfin_item_id):
-    """Fetch a Jellyfin item for the current Jellyfin user."""
-    jellyfin = get_jellyfin()
-    user_id = get_jellyfin_user_id(jellyfin)
-    response = jellyfin_session_get(
-        jellyfin,
-        f'/Users/{user_id}/Items/{jellyfin_item_id}',
-        params={'Fields': 'Path,ProductionYear,ParentId,ProviderIds'},
-    )
-    response.raise_for_status()
-    return jellyfin, user_id, response.json()
-
-
 def _get_item_context(provider, item_id):
     """Return provider-specific item context for theme operations."""
     provider = _normalize_provider(provider)
@@ -534,7 +395,7 @@ def _get_item_context(provider, item_id):
             'has_plex_theme': bool(getattr(item, 'theme', None)),
         }
 
-    jellyfin, _, item = _get_jellyfin_item(item_id)
+    jellyfin, _, item = get_jellyfin_item(item_id)
     local_path = _validate_local_media_path(get_jellyfin_item_local_path(item))
     return {
         'provider': 'jellyfin',
@@ -1034,7 +895,7 @@ def _build_library_items(section_id, include_theme_state=True, provider='plex'):
 
         logger.info('Checking ThemerrDB availability for %s section %s (%d items)', provider, section_id, len(items))
         result = [
-            _serialize_jellyfin_item(item, section_id, theme_dirs=theme_dirs)
+            serialize_jellyfin_item(item, section_id, theme_dirs=theme_dirs, get_themerrdb_theme_fn=get_themerrdb_theme_for_item)
             for item in items
         ]
 
@@ -1058,8 +919,7 @@ def _invalidate_library_cache():
         _library_cache.clear()
     with _poster_cache_lock:
         _poster_cache.clear()
-    with _jellyfin_user_id_lock:
-        _jellyfin_user_id_cache['value'] = None
+    reset_jellyfin_user_id_cache()
     with _theme_hydration_status_lock:
         _theme_hydration_status.update({
             'running': True,
@@ -1321,7 +1181,7 @@ def _warm_library_cache():
 
     if jellyfin_is_configured():
         try:
-            for section in _get_jellyfin_libraries():
+            for section in get_jellyfin_libraries():
                 section_id = str(section['id'])
                 sections.append({
                     'provider': 'jellyfin',
@@ -1696,7 +1556,7 @@ def get_libraries():
 
     if jellyfin_is_configured():
         try:
-            result.extend(_get_jellyfin_libraries())
+            result.extend(get_jellyfin_libraries())
         except Exception as exc:
             jellyfin_error = exc
 

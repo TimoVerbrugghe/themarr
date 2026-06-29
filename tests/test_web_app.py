@@ -395,7 +395,7 @@ class TestLibraries:
             'provider': 'jellyfin',
         }
         with patch('app.web_app.jellyfin_is_configured', return_value=True), \
-             patch('app.web_app._get_jellyfin_libraries', return_value=[jellyfin_library]):
+             patch('app.web_app.get_jellyfin_libraries', return_value=[jellyfin_library]):
             resp = client.get('/api/libraries')
 
         assert resp.status_code == 200
@@ -417,7 +417,7 @@ class TestLibraries:
         with patch.dict(os.environ, {'PLEX_URL': '', 'PLEX_TOKEN': ''}, clear=False):
             with patch('app.web_app.get_plex', side_effect=AssertionError('get_plex should not be called')):
                 with patch('app.web_app.jellyfin_is_configured', return_value=True), \
-                     patch('app.web_app._get_jellyfin_libraries', return_value=[jellyfin_library]):
+                     patch('app.web_app.get_jellyfin_libraries', return_value=[jellyfin_library]):
                     resp = client.get('/api/libraries')
 
         assert resp.status_code == 200
@@ -485,7 +485,7 @@ class TestExternalIds:
         assert ids == {'imdb': 'tt0468569', 'tvdb': '80379', 'tmdb': None}
 
     def test_serialize_jellyfin_item_sets_themerrdb_flag(self):
-        from app import web_app
+        from app import jellyfin_utils
 
         jellyfin_item = {
             'Id': 'jf-1',
@@ -496,8 +496,10 @@ class TestExternalIds:
             'ProviderIds': {'Imdb': 'tt1234567', 'Tmdb': '1234'},
         }
 
-        with patch('app.web_app.get_themerrdb_theme_for_item', return_value={'youtube_theme_url': 'https://youtube.com/watch?v=test'}):
-            data = web_app._serialize_jellyfin_item(jellyfin_item, 'jf-lib', theme_dirs={})
+        def mock_get_themerrdb(provider, item):
+            return {'youtube_theme_url': 'https://youtube.com/watch?v=test'}
+
+        data = jellyfin_utils.serialize_jellyfin_item(jellyfin_item, 'jf-lib', theme_dirs={}, get_themerrdb_theme_fn=mock_get_themerrdb)
 
         assert data['has_themerrdb_theme'] is True
         assert data['plex_theme_source_unverified'] is False
