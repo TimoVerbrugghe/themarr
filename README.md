@@ -64,15 +64,19 @@ Themarr is designed to run with the `docker-compose.yml` in this repository.
 
 ### Important: path mounts must match your media-server container paths
 
-Your mounted library paths in Themarr must match the paths reported by your server items so local `theme.mp3` files are resolved correctly.
+Themarr writes `theme.mp3` files directly to the media library on disk. To locate the right folder, it uses the file-system path that Plex or Jellyfin reports for each item — so Themarr's container must mount the **same host directories** at the **same container paths** that your media-server container uses.
 
-Example:
+Edit the `volumes` section of `docker-compose.yml` to match your actual library paths:
 
 ```yaml
 volumes:
+  # Use the SAME path on both sides (host:container) so that the absolute path
+  # inside Themarr matches the path reported by your Plex/Jellyfin container.
   - /media/tvshows:/media/tvshows
   - /media/movies:/media/movies
 ```
+
+If your Plex or Jellyfin container mounts `/data/media/tv`, use `/data/media/tv:/data/media/tv` here.
 
 ## Environment variables
 

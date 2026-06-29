@@ -48,7 +48,6 @@ Primary environment variables are defined in `.env.example`:
 
 - `PLEX_URL`, `PLEX_TOKEN` — Plex server credentials
 - `JELLYFIN_URL`, `JELLYFIN_API_KEY`, `JELLYFIN_USER_ID` — Jellyfin server credentials/user context
-- `TV_SHOWS_HOST_PATH`, `MOVIES_HOST_PATH` — host paths mounted into container (**security boundary**: constrains filesystem write operations)
 - `FLASK_DEBUG` — Flask debug mode (never enable in production)
 - `DEFAULT_THEME` — default UI theme: `dark` or `light`
 - `DEFAULT_VIEW` — default library view: `list` or `grid`
@@ -83,7 +82,6 @@ Primary environment variables are defined in `.env.example`:
 ## Security Notes
 
 - **API key**: `GET /api/settings/runtime` is an **authenticated** endpoint — it requires a valid session cookie or API key header and returns the actual key in the response. The key is never written to `localStorage`. Users log in via the Settings page; the server sets an httpOnly session cookie (`POST /api/auth/login`). The key is kept in JS memory (`apiKey`) for the lifetime of the tab.
-- **Media root validation**: `TV_SHOWS_HOST_PATH` / `MOVIES_HOST_PATH` are security controls — set them to constrain filesystem write operations to known library directories.
 - **yt-dlp**: `remote_components` must NOT be enabled (supply-chain risk — fetches and executes JS from GitHub at runtime).
 - **ThemerrDB URLs**: always validate with `is_valid_youtube_url()` before passing to yt-dlp.
 

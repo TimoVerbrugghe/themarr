@@ -2,6 +2,9 @@ name: Dependabot auto-merge
 
 on:
   pull_request_target:
+    # Restrict to the three events Dependabot actually emits; avoids firing on
+    # labeled/closed/edited events which are irrelevant and widen attack surface.
+    types: [opened, synchronize, reopened]
 
 permissions: {}
 
@@ -9,14 +12,19 @@ jobs:
   dependabot-auto-merge:
     name: Auto-merge Dependabot PRs
     runs-on: ubuntu-latest
-    if: ${{ github.actor == 'dependabot[bot]' }}
+    # Double guard: reserved [bot] identity + branch-name prefix check.
+    # startsWith on head_ref adds defense-in-depth against hypothetical
+    # future identity policy changes.
+    if: >
+      github.actor == 'dependabot[bot]' &&
+      startsWith(github.head_ref, 'dependabot/')
     permissions:
       contents: write
       pull-requests: write
     steps:
       - name: Fetch Dependabot metadata
         id: metadata
-        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 

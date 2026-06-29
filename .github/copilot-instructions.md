@@ -67,6 +67,13 @@ use CI behavior instead of local screenshot commits:
 - Favor explicit logging and clear error messages.
 - Update README when setup/behavior/config changes.
 - Do not generate screenshots during normal agent coding/testing sessions.
+- **Sessions must NOT survive container restarts.** `SECRET_KEY` is always generated
+  fresh with `secrets.token_hex(32)` at startup and must never be read from an
+  environment variable or made configurable. Do not add `SECRET_KEY` to `.env.example`,
+  `docker-compose.yml`, or any documentation as a user-settable option.
+- **CodeQL is enabled via GitHub repository settings** (Settings → Security → Code
+  scanning). Do not add or modify `.github/workflows/codeql.yml` — a custom workflow
+  file would duplicate or conflict with the managed configuration.
 
 ## Files to check when changing configuration
 

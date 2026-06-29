@@ -6,7 +6,10 @@ from werkzeug.utils import safe_join
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
-ALLOWED_UPLOAD_TYPES = {'audio/mpeg', 'audio/mp3', 'application/octet-stream'}
+ALLOWED_UPLOAD_TYPES = {'audio/mpeg', 'audio/mp3'}
+
+# MP3 magic byte prefixes: ID3 tag header or MPEG sync-word variants.
+_MP3_MAGIC_PREFIXES = (b'ID3', b'\xff\xfb', b'\xff\xf3', b'\xff\xf2', b'\xff\xe0')
 
 VIDEO_FILE_EXTENSIONS = {
     '.3gp', '.asf', '.avi', '.divx', '.flv', '.iso', '.m2ts', '.m4v', '.mkv',
@@ -33,8 +36,18 @@ def _validate_local_media_path(local_path):
     if not normalized.startswith('/'):
         raise ValueError('Invalid local media path')
 
-    normalized_path = Path(normalized)
-    return normalized_path
+    return Path(normalized)
+
+
+def _is_valid_mp3_magic(file_obj) -> bool:
+    """Return True when the first bytes of *file_obj* match an MP3 magic signature."""
+    try:
+        pos = file_obj.tell()
+        header = file_obj.read(3)
+        file_obj.seek(pos)
+        return any(header.startswith(prefix) for prefix in _MP3_MAGIC_PREFIXES)
+    except Exception:
+        return False
 
 
 def _theme_file_path(local_path):
