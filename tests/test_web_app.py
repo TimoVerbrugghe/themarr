@@ -47,14 +47,16 @@ def mock_plex():
             with patch('app.cache.get_plex') as mock_cache_get_plex:
                 with patch('app.webhook_handlers.get_plex') as mock_webhook_get_plex:
                     with patch('app.bulk_operations.get_plex') as mock_bulk_get_plex:
-                        plex = MagicMock()
-                        plex.friendlyName = 'Test Plex Server'
-                        plex.version = '1.0.0'
-                        mock_get_plex.return_value = plex
-                        mock_cache_get_plex.return_value = plex
-                        mock_webhook_get_plex.return_value = plex
-                        mock_bulk_get_plex.return_value = plex
-                        yield plex
+                        with patch('app.theme_state.get_plex') as mock_theme_state_get_plex:
+                            plex = MagicMock()
+                            plex.friendlyName = 'Test Plex Server'
+                            plex.version = '1.0.0'
+                            mock_get_plex.return_value = plex
+                            mock_cache_get_plex.return_value = plex
+                            mock_webhook_get_plex.return_value = plex
+                            mock_bulk_get_plex.return_value = plex
+                            mock_theme_state_get_plex.return_value = plex
+                            yield plex
 
 
 def make_mock_show(rating_key=1, title='Test Show', year=2020, has_theme=True, location=None):
@@ -548,8 +550,8 @@ class TestLibraryItemsAdditional:
         section.all.return_value = []
         mock_plex.library.sectionByID.return_value = section
 
-        with patch('app.media_utils.scan_local_theme_dirs', return_value={}) as mock_scan, \
-             patch('app.plex_utils.get_section_base_paths', return_value={'/fallback-path'}):
+        with patch('app.cache.scan_local_theme_dirs', return_value={}) as mock_scan, \
+             patch('app.cache.get_section_base_paths', return_value={'/fallback-path'}):
             from app.cache import build_library_items
             build_library_items(1)
 
@@ -566,7 +568,7 @@ class TestLibraryItemsAdditional:
             'has_plex_theme': False,
             'has_local_theme': False,
         }]
-        with patch('app.cache.build_library_items', return_value=jellyfin_items):
+        with patch('app.web_app.build_library_items', return_value=jellyfin_items):
             resp = client.get('/api/libraries/jellyfin/jf-lib/items')
         assert resp.status_code == 200
         data = resp.get_json()
@@ -839,7 +841,7 @@ class TestProviderThemeUpload:
             'local_path': jf_dir,
         }
         with patch('app.web_app._get_item_context', return_value=context), \
-             patch('app.web_app._sync_cached_item_theme_state', return_value=(None, False)):
+             patch('app.web_app.sync_cached_item_theme_state', return_value=(None, False)):
             resp = client.post(
                 '/api/items/jellyfin/jf-item/theme/upload',
                 data={'overwrite': 'false',
@@ -1035,8 +1037,8 @@ class TestThemerrDB:
         show.guids = [{'id': 'imdb://tt1234567'}]
         mock_plex.fetchItem.return_value = show
 
-        with patch('app.web_app.get_themerrdb_data_for_context', return_value={'youtube_theme_url': 'https://youtube.com/watch?v=test'}), \
-             patch('app.web_app.extract_youtube_audio_url', return_value='https://audio.example/stream'):
+        with patch('app.theme_state.get_themerrdb_data_for_context', return_value={'youtube_theme_url': 'https://youtube.com/watch?v=test'}), \
+             patch('app.theme_state.extract_youtube_audio_url', return_value='https://audio.example/stream'):
             resp = client.get('/api/items/1/theme/themerrdb/check')
 
         assert resp.status_code == 200
@@ -1144,9 +1146,9 @@ class TestThemerrDB:
             'local_path': '/movies/Jellyfin Movie (2020)',
         }
         with patch('app.web_app._get_item_context', return_value=context), \
-             patch('app.web_app.get_themerrdb_data_for_context', return_value={'youtube_theme_url': 'https://youtube.com/watch?v=test'}), \
-             patch('app.web_app.extract_youtube_audio_url', return_value='https://audio.example/stream'), \
-             patch('app.web_app._get_external_ids_for_context', return_value={'imdb': 'tt1234567', 'tmdb': None, 'tvdb': None}):
+             patch('app.theme_state.get_themerrdb_data_for_context', return_value={'youtube_theme_url': 'https://youtube.com/watch?v=test'}), \
+             patch('app.theme_state.extract_youtube_audio_url', return_value='https://audio.example/stream'), \
+             patch('app.theme_state.get_external_ids_for_context', return_value={'imdb': 'tt1234567', 'tmdb': None, 'tvdb': None}):
             resp = client.get('/api/items/jellyfin/jf-1/theme/themerrdb/check')
 
         assert resp.status_code == 200
@@ -1558,7 +1560,7 @@ class TestPlexWebhook:
         assert resp.status_code == 403
 
     def test_process_library_new_downloads_theme_when_missing(self, tmp_path):
-        from app import web_app
+        from app.webhook_handlers import process_plex_library_new
 
         show_dir = tmp_path / 'New Show (2024)'
         show_dir.mkdir()
@@ -1567,16 +1569,16 @@ class TestPlexWebhook:
         plex = MagicMock()
         plex.library.fetchItem.return_value = show
 
-        with patch('app.web_app.get_plex', return_value=plex), \
-             patch('app.web_app._download_plex_theme_to_path') as mock_download, \
-             patch('app.web_app.send_pushover_notification') as mock_notify:
-            web_app._process_plex_library_new('123')
+        mock_download = MagicMock()
+        with patch('app.webhook_handlers.get_plex', return_value=plex), \
+             patch('app.webhook_handlers.send_pushover_notification') as mock_notify:
+            process_plex_library_new('123', download_plex_theme_fn=mock_download)
 
         mock_download.assert_called_once()
         mock_notify.assert_called_once()
 
     def test_process_library_new_skips_when_theme_exists(self, tmp_path):
-        from app import web_app
+        from app.webhook_handlers import process_plex_library_new
 
         show_dir = tmp_path / 'Existing Show (2024)'
         show_dir.mkdir()
@@ -1586,9 +1588,9 @@ class TestPlexWebhook:
         plex = MagicMock()
         plex.library.fetchItem.return_value = show
 
-        with patch('app.web_app.get_plex', return_value=plex), \
-             patch('app.web_app._download_plex_theme_to_path') as mock_download:
-            web_app._process_plex_library_new('123')
+        mock_download = MagicMock()
+        with patch('app.webhook_handlers.get_plex', return_value=plex):
+            process_plex_library_new('123', download_plex_theme_fn=mock_download)
 
         mock_download.assert_not_called()
 
