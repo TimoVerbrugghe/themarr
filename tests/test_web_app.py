@@ -5,7 +5,6 @@ import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from urllib.parse import urlparse
 
 import pytest
 
@@ -1987,12 +1986,8 @@ class TestSecurityHeaders:
             if parts:
                 directives[parts[0]] = parts[1:]
 
-        img_src_hosts = []
-        for source in directives.get('img-src', []):
-            parsed = urlparse(source)
-            if parsed.scheme == 'https' and parsed.hostname:
-                img_src_hosts.append(parsed.hostname)
-        assert 'i.ytimg.com' in img_src_hosts
+        img_src_sources = directives.get('img-src', [])
+        assert any(source == 'https://i.ytimg.com' for source in img_src_sources)
 
     def test_security_headers_on_html_response(self, app):
         with app.test_client() as c:
