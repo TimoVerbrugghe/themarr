@@ -33,9 +33,17 @@ services:
       DISABLE_AUTH: ${DISABLE_AUTH:-false}
       WEBHOOK_USERNAME: ${WEBHOOK_USERNAME:-}
       WEBHOOK_PASSWORD: ${WEBHOOK_PASSWORD:-}
+      # These must match the container paths in the volumes section below.
+      # Themarr uses them to constrain filesystem write operations to your library roots.
+      TV_SHOWS_HOST_PATH: /media/tvshows
+      MOVIES_HOST_PATH: /media/movies
     volumes:
-      - ${TV_SHOWS_HOST_PATH:-/mnt/tv}:${TV_SHOWS_HOST_PATH:-/mnt/tv}
-      - ${MOVIES_HOST_PATH:-/mnt/movies}:${MOVIES_HOST_PATH:-/mnt/movies}
+      # Mount your media library directories at the SAME path as in your Plex/Jellyfin container.
+      # Themarr uses the paths reported by Plex/Jellyfin to locate files on disk, so the
+      # container path here must be identical to the path inside your media-server container.
+      # Replace these examples with your actual library paths (update the environment values above too).
+      - /media/tvshows:/media/tvshows
+      - /media/movies:/media/movies
     ports:
       - "8080:8080"
     restart: unless-stopped
