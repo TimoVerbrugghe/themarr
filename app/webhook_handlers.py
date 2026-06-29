@@ -89,19 +89,33 @@ def process_plex_library_new(rating_key, download_plex_theme_fn):
 
 def _is_jellyfin_item_added_event(payload):
     """Return True when a Jellyfin webhook payload represents an item-added event."""
-    event = str(
+    event_name = _jellyfin_webhook_event_name(payload)
+    normalized = _normalize_jellyfin_event_name(event_name)
+    return normalized in {'itemadded', 'librarynew'}
+
+
+def _jellyfin_webhook_event_name(payload):
+    """Extract the Jellyfin webhook event name from supported payload fields."""
+    return str(
         payload.get('NotificationType')
         or payload.get('notificationType')
         or payload.get('event')
         or ''
-    ).strip().lower()
-    normalized = ''.join(ch for ch in event if ch.isalnum())
-    return normalized in {'itemadded', 'librarynew'}
+    ).strip()
+
+
+def _normalize_jellyfin_event_name(event_name):
+    """Normalize Jellyfin webhook event names for variant matching."""
+    normalized = str(event_name or '').strip().lower()
+    for separator in ('_', '-', '.', ' '):
+        normalized = normalized.replace(separator, '')
+    return normalized
 
 
 def _extract_jellyfin_item_id(payload):
     """Extract Jellyfin item identifier from a webhook payload."""
-    item = payload.get('Item') if isinstance(payload.get('Item'), dict) else {}
+    raw_item = payload.get('Item')
+    item = raw_item if isinstance(raw_item, dict) else {}
     return str(
         payload.get('ItemId')
         or payload.get('itemId')
@@ -113,6 +127,7 @@ def _extract_jellyfin_item_id(payload):
 
 
 def _item_type_from_jellyfin_value(raw_item_type):
+    """Convert Jellyfin item type to ThemerrDB item type ('show'/'movie')."""
     item_type = str(raw_item_type or '').strip().lower()
     if item_type == 'movie':
         return 'movie'

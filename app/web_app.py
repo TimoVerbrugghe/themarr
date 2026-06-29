@@ -75,6 +75,7 @@ from app.theme_state import (
 )
 from app.webhook_handlers import (
     check_webhook_server_uuid, process_plex_library_new, process_jellyfin_item_added,
+    _is_jellyfin_item_added_event, _jellyfin_webhook_event_name, _extract_jellyfin_item_id,
 )
 from app.bulk_operations import bulk_download_themes
 
@@ -1465,13 +1466,12 @@ def jellyfin_webhook():
         logger.warning('Jellyfin webhook: missing or invalid payload')
         return jsonify({'success': True}), 200
 
-    event = payload.get('NotificationType') or payload.get('notificationType') or payload.get('event') or ''
+    event = _jellyfin_webhook_event_name(payload)
     logger.info('Jellyfin webhook: event=%s', event)
-    normalized_event = ''.join(ch for ch in str(event).lower() if ch.isalnum())
-    if normalized_event not in {'itemadded', 'librarynew'}:
+    if not _is_jellyfin_item_added_event(payload):
         return jsonify({'success': True}), 200
 
-    item_id = payload.get('ItemId') or payload.get('itemId') or payload.get('item_id') or 'unknown'
+    item_id = _extract_jellyfin_item_id(payload) or 'unknown'
     fn = partial(
         process_jellyfin_item_added,
         get_item_context_fn=_get_item_context,
