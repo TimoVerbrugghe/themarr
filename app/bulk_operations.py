@@ -4,10 +4,10 @@ import logging
 
 from flask import request, jsonify
 
-from app.plex_utils import get_plex, plex_session_get, get_validated_plex_local_path
+from app.plex_utils import get_plex, plex_session_get, get_validated_plex_local_path, refresh_plex_item_metadata
 from app.media_utils import _theme_file_path
 from app.errors import error_response
-from app.notifications import send_pushover_notification
+from app.notifications import send_pushover_notification, TRIGGER_UI
 from app.theme_state import has_nonempty_theme_file
 from app.cache import sync_cached_item
 
@@ -72,6 +72,7 @@ def bulk_download_themes():
 
             results['success'].append({'ratingKey': rating_key, 'title': item.title})
             sync_cached_item(item)
+            refresh_plex_item_metadata(item)
             logger.info('Bulk: downloaded theme for %s', item.title)
 
         except Exception as exc:
@@ -84,6 +85,7 @@ def bulk_download_themes():
         send_pushover_notification(
             title=f"Themes Downloaded ({len(results['success'])})",
             message=msg,
+            trigger=TRIGGER_UI,
         )
 
     return jsonify(results)

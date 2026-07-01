@@ -33,7 +33,10 @@ You can also upload custom MP3 files and copy existing local themes between item
   Automatically process new library items from webhook events.
 
 - **Pushover notifications (optional)**  
-  Receive push notifications when downloads complete.
+  Receive push notifications when downloads complete. Notifications can be independently enabled/disabled for webhook-triggered downloads, webhook failures, and UI-triggered downloads using `NOTIFY_ON_WEBHOOK_DOWNLOAD`, `NOTIFY_ON_WEBHOOK_FAILURE`, and `NOTIFY_ON_UI_DOWNLOAD`.
+
+- **Automatic metadata refresh**  
+  After a theme is downloaded, uploaded, or copied, Themarr automatically triggers a metadata refresh on the connected Plex and/or Jellyfin server so the theme is picked up without manual intervention. When both providers are configured, a cross-provider refresh is attempted for the same media item on the other server as well.
 
 - **Dark/light UI + poster/list views**  
   Configurable defaults with in-browser preference switching.
@@ -110,6 +113,9 @@ If your Plex or Jellyfin container mounts `/data/media/tv`, use `/data/media/tv:
 | `WEBHOOK_PASSWORD` | No | — | Optional Basic Auth password for Plex/Jellyfin webhook endpoints |
 | `PUSHOVER_APP_TOKEN` | No | — | Pushover app token (required together with `PUSHOVER_USER_KEY`) |
 | `PUSHOVER_USER_KEY` | No | — | Pushover user/group key (required together with `PUSHOVER_APP_TOKEN`) |
+| `NOTIFY_ON_WEBHOOK_DOWNLOAD` | No | `true` | Send a Pushover notification when a theme is auto-downloaded via a Plex/Jellyfin webhook |
+| `NOTIFY_ON_WEBHOOK_FAILURE` | No | `true` | Send a Pushover notification when a webhook-triggered theme download fails |
+| `NOTIFY_ON_UI_DOWNLOAD` | No | `true` | Send a Pushover notification when a theme is downloaded, uploaded, or copied through the web UI |
 
 \* Configure at least one provider (Plex and/or Jellyfin).
 

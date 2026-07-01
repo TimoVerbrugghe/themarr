@@ -6,13 +6,17 @@ import logging
 from flask import jsonify
 
 from app.external_ids import extract_jellyfin_external_ids
-from app.plex_utils import get_plex, get_validated_plex_local_path
+from app.plex_utils import get_plex, get_validated_plex_local_path, refresh_plex_item_metadata
 from app.media_utils import _theme_file_path
-from app.notifications import send_pushover_notification
+from app.notifications import (
+    send_pushover_notification,
+    TRIGGER_WEBHOOK_DOWNLOAD, TRIGGER_WEBHOOK_FAILURE,
+)
 from app.theme_state import has_nonempty_theme_file
 from app.cache import sync_cached_item, sync_cached_item_theme_state
 from app.themerrdb_service import get_themerrdb_theme_for_external_ids
 from app.youtube_utils import is_valid_youtube_url
+from app.jellyfin_utils import refresh_jellyfin_item_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -75,15 +79,18 @@ def process_plex_library_new(rating_key, download_plex_theme_fn):
         
         download_plex_theme_fn(plex, item, theme_path)
         sync_cached_item(item)
+        refresh_plex_item_metadata(item)
         send_pushover_notification(
             title='Theme Downloaded',
             message=f'{item.title} theme auto-downloaded via Plex webhook',
+            trigger=TRIGGER_WEBHOOK_DOWNLOAD,
         )
     except Exception as exc:
         logger.error("Plex webhook: failed to process item %s: %s", rating_key, exc)
         send_pushover_notification(
             title='Theme Download Failed',
             message=f'Failed to process Plex webhook for item {rating_key}',
+            trigger=TRIGGER_WEBHOOK_FAILURE,
         )
 
 
@@ -179,13 +186,16 @@ def process_jellyfin_item_added(payload, get_item_context_fn, download_youtube_t
         theme_path = _theme_file_path(local_path)
         download_youtube_theme_fn(youtube_url, theme_path)
         sync_cached_item_theme_state('jellyfin', item_id)
+        refresh_jellyfin_item_metadata(item_id)
         send_pushover_notification(
             title='Theme Downloaded',
             message=f'{title} theme auto-downloaded via Jellyfin webhook',
+            trigger=TRIGGER_WEBHOOK_DOWNLOAD,
         )
     except Exception as exc:
         logger.error('Jellyfin webhook: failed to process item %s: %s', item_id, exc)
         send_pushover_notification(
             title='Theme Download Failed',
             message=f'Failed to process Jellyfin webhook for item {item_id}',
+            trigger=TRIGGER_WEBHOOK_FAILURE,
         )

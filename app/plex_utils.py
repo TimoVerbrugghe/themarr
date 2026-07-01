@@ -93,3 +93,36 @@ def download_plex_theme_to_path(plex, item, theme_path):
                 fh.write(chunk)
     logger.info('Downloaded Plex theme for %s to %s', item.title, theme_path)
     return True
+
+
+def refresh_plex_item_metadata(item):
+    """Trigger a Plex metadata refresh for *item* so the server picks up new local files.
+
+    Errors are logged as warnings and do not propagate — the refresh is best-effort.
+    """
+    try:
+        item.refresh()
+        logger.info('Triggered Plex metadata refresh for %s', getattr(item, 'title', str(item)))
+    except Exception as exc:
+        logger.warning('Failed to trigger Plex metadata refresh for item: %s', exc)
+
+
+def find_plex_item_by_path(plex, local_path):
+    """Find the Plex item whose local filesystem path equals *local_path*.
+
+    Iterates all show/movie sections and checks each item's reported location.
+    Returns the first matching plexapi item, or None when not found.
+    Used for cross-provider metadata refresh when both Plex and Jellyfin are connected.
+    """
+    path_str = str(local_path)
+    try:
+        for section in plex.library.sections():
+            if section.type not in ('show', 'movie'):
+                continue
+            for item in section.all():
+                item_path = get_item_local_path(item)
+                if item_path and str(item_path) == path_str:
+                    return item
+    except Exception as exc:
+        logger.warning('Failed to search Plex for item at path %s: %s', local_path, exc)
+    return None

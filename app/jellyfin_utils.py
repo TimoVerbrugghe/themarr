@@ -203,3 +203,61 @@ def reset_jellyfin_user_id_cache():
     """Reset the cached Jellyfin user ID (called during library cache refresh)."""
     with _jellyfin_user_id_lock:
         _jellyfin_user_id_cache['value'] = None
+
+
+def refresh_jellyfin_item_metadata(item_id):
+    """Trigger a Jellyfin metadata refresh for *item_id* so it picks up new local files.
+
+    Sends ``POST /Items/{item_id}/Refresh`` with a full metadata re-scan.
+    Errors are logged as warnings and do not propagate — the refresh is best-effort.
+    """
+    try:
+        jellyfin = get_jellyfin()
+        response = jellyfin_session_post(
+            jellyfin,
+            f'/Items/{item_id}/Refresh',
+            params={
+                'Recursive': 'false',
+                'ImageRefreshMode': 'None',
+                'MetadataRefreshMode': 'FullRefresh',
+            },
+        )
+        response.raise_for_status()
+        logger.info('Triggered Jellyfin metadata refresh for item %s', item_id)
+    except Exception as exc:
+        logger.warning('Failed to trigger Jellyfin metadata refresh for item %s: %s', item_id, exc)
+
+
+def find_jellyfin_item_id_by_path(local_path):
+    """Find the Jellyfin item ID whose local path matches *local_path*.
+
+    Queries all series/movie items across all libraries and returns the ID of
+    the first match.  Returns None when not found or when Jellyfin is not
+    configured.  Used for cross-provider metadata refresh when both Plex and
+    Jellyfin are connected.
+    """
+    try:
+        jellyfin = get_jellyfin()
+        user_id = get_jellyfin_user_id(jellyfin)
+        response = jellyfin_session_get(
+            jellyfin,
+            f'/Users/{user_id}/Items',
+            params={
+                'Fields': 'Path',
+                'Recursive': 'true',
+                'IncludeItemTypes': 'Series,Movie',
+            },
+        )
+        if response.status_code != 200:
+            return None
+        path_str = str(local_path)
+        for item in response.json().get('Items', []):
+            raw_path = item.get('Path') or ''
+            candidate = Path(raw_path)
+            if _is_video_file_path(candidate):
+                candidate = candidate.parent
+            if str(candidate) == path_str:
+                return str(item.get('Id'))
+    except Exception as exc:
+        logger.warning('Failed to search Jellyfin for item at path %s: %s', local_path, exc)
+    return None
