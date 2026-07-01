@@ -28,9 +28,6 @@ jobs:
       security-events: write    # Upload SARIF to Security tab
       packages: read            # Pull image from GHCR
 
-    env:
-      IMAGE: ghcr.io/${{ github.repository }}:main
-
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
@@ -38,6 +35,9 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set lowercase image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}:main" >> "$GITHUB_ENV"
 
       - name: Pull image
         run: docker pull "$IMAGE"
