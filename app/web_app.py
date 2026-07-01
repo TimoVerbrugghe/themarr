@@ -1397,7 +1397,13 @@ def download_provider_from_youtube(provider, item_id):
                 data.get('end_time'),
             )
         except ValueError as exc:
-            return jsonify({'error': str(exc)}), 400
+            logger.warning(
+                'Invalid YouTube trim parameters for %s:%s: %s',
+                provider,
+                item_id,
+                exc,
+            )
+            return jsonify({'error': 'Invalid trim parameters'}), 400
         context = _get_item_context(provider, item_id)
 
         local_path = _validate_local_media_path(context['local_path'])
