@@ -141,11 +141,7 @@ If `DISABLE_AUTH=false` and either `AUTH_USERNAME` or `AUTH_PASSWORD` is missing
 ### API key (automation)
 
 `API_KEY` is independent from UI auth mode and is intended for scripts, API clients, and webhook callers.
-If `API_KEY` is not set, Themarr generates an API key at startup and logs it:
-
-```bash
-docker logs <container> 2>&1 | grep "startup API key"
-```
+If `API_KEY` is not set, Themarr generates an API key at startup. The API key can be viewed on the settings page.
 
 ### Disable auth (reverse-proxy)
 
