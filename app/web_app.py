@@ -223,9 +223,12 @@ def _trigger_metadata_refresh(provider, item, item_id, local_path):
         if item is not None:
             refresh_plex_item_metadata(item)
         if both_configured and local_path:
-            jf_item_id = find_jellyfin_item_id_by_path(local_path)
-            if jf_item_id:
-                refresh_jellyfin_item_metadata(jf_item_id)
+            try:
+                jf_item_id = find_jellyfin_item_id_by_path(local_path)
+                if jf_item_id:
+                    refresh_jellyfin_item_metadata(jf_item_id)
+            except Exception as exc:
+                logger.warning('Cross-provider Jellyfin refresh failed: %s', exc)
     elif provider == 'jellyfin':
         refresh_jellyfin_item_metadata(item_id)
         if both_configured and local_path:
