@@ -948,7 +948,8 @@ def download_from_youtube(rating_key):
                 data.get('end_time'),
             )
         except ValueError as exc:
-            return jsonify({'error': str(exc)}), 400
+            logger.warning('Invalid YouTube trim window for %s: %s', rating_key, exc)
+            return jsonify({'error': 'Invalid trim window values'}), 400
 
         plex = get_plex()
         item = plex.fetchItem(rating_key)
