@@ -63,7 +63,7 @@ class TestThemeYoutube:
             },
         )
         assert resp.status_code == 400
-        assert resp.get_json()['error'] == 'Stop time must be greater than start time'
+        assert resp.get_json()['error'] == 'Invalid trim window values'
 
     def test_youtube_download_passes_trim_window(self, client, mock_plex, tmp_path):
         show_dir = tmp_path / 'Test Show (2020)'
