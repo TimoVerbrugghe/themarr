@@ -103,11 +103,31 @@ class TestPlexWebhook:
 
         mock_download = MagicMock()
         with patch('app.webhook_handlers.get_plex', return_value=plex), \
-             patch('app.webhook_handlers.send_pushover_notification') as mock_notify:
+             patch('app.webhook_handlers.send_pushover_notification') as mock_notify, \
+             patch('app.webhook_handlers.refresh_plex_item_metadata') as mock_refresh:
             process_plex_library_new('123', download_plex_theme_fn=mock_download)
 
         mock_download.assert_called_once()
         mock_notify.assert_called_once()
+        mock_refresh.assert_called_once_with(show)
+
+    def test_process_library_new_triggers_metadata_refresh(self, tmp_path):
+        """Plex webhook calls refresh_plex_item_metadata after a successful download."""
+        from app.webhook_handlers import process_plex_library_new
+
+        show_dir = tmp_path / 'Refresh Show (2024)'
+        show_dir.mkdir()
+        show = make_mock_show(title='Refresh Show', location=str(show_dir), has_theme=True)
+
+        plex = MagicMock()
+        plex.library.fetchItem.return_value = show
+
+        with patch('app.webhook_handlers.get_plex', return_value=plex), \
+             patch('app.webhook_handlers.send_pushover_notification'), \
+             patch('app.webhook_handlers.refresh_plex_item_metadata') as mock_refresh:
+            process_plex_library_new('123', download_plex_theme_fn=MagicMock())
+
+        mock_refresh.assert_called_once_with(show)
 
     def test_process_library_new_skips_when_theme_exists(self, tmp_path):
         from app.webhook_handlers import process_plex_library_new
@@ -159,7 +179,8 @@ class TestJellyfinWebhook:
 
         with patch('app.webhook_handlers.get_themerrdb_theme_for_external_ids', return_value={'youtube_theme_url': 'https://www.youtube.com/watch?v=abc'}), \
              patch('app.webhook_handlers.send_pushover_notification') as mock_notify, \
-             patch('app.webhook_handlers.sync_cached_item_theme_state') as mock_sync:
+             patch('app.webhook_handlers.sync_cached_item_theme_state') as mock_sync, \
+             patch('app.webhook_handlers.refresh_jellyfin_item_metadata') as mock_refresh:
             process_jellyfin_item_added(
                 payload,
                 get_item_context_fn=lambda _provider, _item_id: context,
@@ -169,6 +190,34 @@ class TestJellyfinWebhook:
         mock_download.assert_called_once_with('https://www.youtube.com/watch?v=abc', show_dir / 'theme.mp3')
         mock_sync.assert_called_once_with('jellyfin', 'jf-1')
         mock_notify.assert_called_once()
+        mock_refresh.assert_called_once_with('jf-1')
+
+    def test_process_item_added_triggers_metadata_refresh(self, tmp_path):
+        """Jellyfin webhook calls refresh_jellyfin_item_metadata after a successful download."""
+        from app.webhook_handlers import process_jellyfin_item_added
+
+        show_dir = tmp_path / 'Refresh Show (2024)'
+        show_dir.mkdir()
+        payload = {'NotificationType': 'ItemAdded', 'ItemId': 'jf-refresh'}
+        context = {
+            'provider': 'jellyfin',
+            'item_id': 'jf-refresh',
+            'title': 'Refresh Show',
+            'local_path': show_dir,
+            'item': {'Type': 'Series', 'ProviderIds': {'Imdb': 'tt456'}},
+        }
+
+        with patch('app.webhook_handlers.get_themerrdb_theme_for_external_ids', return_value={'youtube_theme_url': 'https://www.youtube.com/watch?v=xyz'}), \
+             patch('app.webhook_handlers.send_pushover_notification'), \
+             patch('app.webhook_handlers.sync_cached_item_theme_state'), \
+             patch('app.webhook_handlers.refresh_jellyfin_item_metadata') as mock_refresh:
+            process_jellyfin_item_added(
+                payload,
+                get_item_context_fn=lambda _provider, _item_id: context,
+                download_youtube_theme_fn=MagicMock(),
+            )
+
+        mock_refresh.assert_called_once_with('jf-refresh')
 
     def test_process_item_added_skips_when_local_theme_exists(self, tmp_path):
         from app.webhook_handlers import process_jellyfin_item_added

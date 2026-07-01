@@ -37,12 +37,14 @@ from app.youtube_utils import (
 from app.plex_utils import (
     get_plex, plex_is_configured, plex_session_get, get_section_base_paths,
     get_item_local_path, get_validated_plex_local_path, download_plex_theme_to_path,
+    refresh_plex_item_metadata, find_plex_item_by_path,
 )
 from app.jellyfin_utils import (
     jellyfin_is_configured, get_jellyfin, get_jellyfin_item_local_path, _normalize_provider,
     JELLYFIN_TIMEOUT_SECONDS, jellyfin_session_get, jellyfin_session_post,
     get_jellyfin_user_id, get_jellyfin_library_count, get_jellyfin_libraries,
     get_jellyfin_item, serialize_jellyfin_item, reset_jellyfin_user_id_cache,
+    refresh_jellyfin_item_metadata, find_jellyfin_item_id_by_path,
 )
 from app.auth import (
     _log_generated_api_key_warning, _auth_disabled, _get_ui_credentials,
@@ -62,7 +64,7 @@ from app.cache import (
     _library_cache_lock, _section_build_locks_lock, _theme_hydration_status_lock,
     _theme_hydration_status, _library_cache,
 )
-from app.notifications import send_pushover_notification
+from app.notifications import send_pushover_notification, TRIGGER_UI
 from app.errors import error_response
 from app.themerrdb_service import (
     get_themerrdb_theme_for_external_ids, get_themerrdb_theme_for_item, query_themerrdb,
@@ -121,6 +123,9 @@ _SETTINGS_ENV_VARS = (
     'DISABLE_AUTH',
     'PUSHOVER_APP_TOKEN',
     'PUSHOVER_USER_KEY',
+    'NOTIFY_ON_WEBHOOK_DOWNLOAD',
+    'NOTIFY_ON_WEBHOOK_FAILURE',
+    'NOTIFY_ON_UI_DOWNLOAD',
     'WEBHOOK_USERNAME',
     'WEBHOOK_PASSWORD',
     'PLEX_RETRY_ATTEMPTS',
@@ -195,6 +200,45 @@ def _download_youtube_theme_to_path(youtube_url, theme_path):
         mp3_path = download_youtube_theme_mp3(youtube_url, tmpdir)
         theme_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(mp3_path), str(theme_path))
+
+
+def _trigger_metadata_refresh(provider, item, item_id, local_path):
+    """Trigger a metadata refresh on the provider that owns the theme, plus cross-provider.
+
+    After a theme.mp3 is placed on disk the owning media server must be told to
+    re-scan so it discovers the new file.  When both Plex and Jellyfin are
+    configured they typically share the same library paths, so the other
+    provider is refreshed too (best-effort).
+
+    *item* may be a plexapi object (for Plex) or a Jellyfin item dict; pass
+    None when the item object is unavailable and the refresh will be skipped for
+    the primary Plex case (item_id is always used for Jellyfin).
+
+    All errors are caught and logged as warnings — a refresh failure must never
+    prevent the theme download response from being returned to the caller.
+    """
+    both_configured = plex_is_configured() and jellyfin_is_configured()
+
+    if provider == 'plex':
+        if item is not None:
+            refresh_plex_item_metadata(item)
+        if both_configured and local_path:
+            try:
+                jf_item_id = find_jellyfin_item_id_by_path(local_path)
+                if jf_item_id:
+                    refresh_jellyfin_item_metadata(jf_item_id)
+            except Exception as exc:
+                logger.warning('Cross-provider Jellyfin refresh failed: %s', exc)
+    elif provider == 'jellyfin':
+        refresh_jellyfin_item_metadata(item_id)
+        if both_configured and local_path:
+            try:
+                plex_instance = get_plex()
+                plex_item = find_plex_item_by_path(plex_instance, local_path)
+                if plex_item:
+                    refresh_plex_item_metadata(plex_item)
+            except Exception as exc:
+                logger.warning('Cross-provider Plex refresh failed: %s', exc)
 
 
 def _get_item_context(provider, item_id):
@@ -721,7 +765,8 @@ def download_theme_from_plex(rating_key):
                     file_handle.write(chunk)
 
         logger.info('Downloaded theme for %s to %s', item.title, theme_path)
-        send_pushover_notification('Theme Downloaded', f'{item.title} theme downloaded from Plex')
+        send_pushover_notification('Theme Downloaded', f'{item.title} theme downloaded from Plex', trigger=TRIGGER_UI)
+        _trigger_metadata_refresh('plex', item, str(rating_key), local_path)
         item_dict, _ = sync_cached_item(item)
         return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
     except Exception as exc:
@@ -774,7 +819,8 @@ def copy_theme_from_item(rating_key):
             'Copied theme from %s (%s) to %s (%s)',
             source_item.title, source_theme_path, target_item.title, target_theme_path,
         )
-        send_pushover_notification('Theme Copied', f'{target_item.title} theme copied from {source_item.title}')
+        send_pushover_notification('Theme Copied', f'{target_item.title} theme copied from {source_item.title}', trigger=TRIGGER_UI)
+        _trigger_metadata_refresh('plex', target_item, str(rating_key), target_local_path)
         item_dict, _ = sync_cached_item(target_item)
         return jsonify({'success': True, 'path': str(target_theme_path), 'item': item_dict})
     except Exception as exc:
@@ -819,7 +865,8 @@ def upload_theme(rating_key):
             raise
 
         logger.info('Uploaded theme for %s to %s', item.title, theme_path)
-        send_pushover_notification('Theme Uploaded', f'{item.title} theme uploaded')
+        send_pushover_notification('Theme Uploaded', f'{item.title} theme uploaded', trigger=TRIGGER_UI)
+        _trigger_metadata_refresh('plex', item, str(rating_key), local_path)
         item_dict, _ = sync_cached_item(item)
         return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
     except Exception as exc:
@@ -913,7 +960,8 @@ def download_from_youtube(rating_key):
             shutil.move(str(mp3_path), str(theme_path))
 
         logger.info('Downloaded YouTube theme for %s to %s', item.title, theme_path)
-        send_pushover_notification('Theme Downloaded', f'{item.title} theme downloaded from YouTube')
+        send_pushover_notification('Theme Downloaded', f'{item.title} theme downloaded from YouTube', trigger=TRIGGER_UI)
+        _trigger_metadata_refresh('plex', item, str(rating_key), local_path)
         item_dict, _ = sync_cached_item(item)
         return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
     except yt_dlp.utils.DownloadError as exc:
@@ -1013,7 +1061,8 @@ def download_from_themerrdb(rating_key):
             shutil.move(str(mp3_path), str(theme_path))
         
         logger.info('Downloaded ThemerrDB theme for %s to %s', item.title, theme_path)
-        send_pushover_notification('Theme Downloaded', f'{item.title} theme downloaded from ThemerrDB')
+        send_pushover_notification('Theme Downloaded', f'{item.title} theme downloaded from ThemerrDB', trigger=TRIGGER_UI)
+        _trigger_metadata_refresh('plex', item, str(rating_key), local_path)
         item_dict, _ = sync_cached_item(item)
         return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
     except yt_dlp.utils.DownloadError as exc:
@@ -1200,7 +1249,8 @@ def download_provider_from_themerrdb(provider, item_id):
             shutil.move(str(mp3_path), str(theme_path))
 
         logger.info('Downloaded ThemerrDB theme for %s item', provider)
-        send_pushover_notification('Theme Downloaded', f"{context['title']} theme downloaded from ThemerrDB")
+        send_pushover_notification('Theme Downloaded', f"{context['title']} theme downloaded from ThemerrDB", trigger=TRIGGER_UI)
+        _trigger_metadata_refresh(provider, context.get('item'), item_id, local_path)
         item_dict, _ = sync_cached_item_theme_state(provider, item_id)
         return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
     except yt_dlp.utils.DownloadError as exc:
@@ -1256,7 +1306,9 @@ def copy_provider_theme_from_item(provider, item_id):
         send_pushover_notification(
             'Theme Copied',
             f"{target_context['title']} theme copied from {source_context['title']}",
+            trigger=TRIGGER_UI,
         )
+        _trigger_metadata_refresh(provider, target_context.get('item'), item_id, target_local_path)
         item_dict, _ = sync_cached_item_theme_state(provider, item_id)
         return jsonify({'success': True, 'path': str(target_theme_path), 'item': item_dict})
     except ValueError as exc:
@@ -1301,7 +1353,8 @@ def upload_provider_theme(provider, item_id):
             raise
 
         logger.info('Uploaded theme for %s item', provider)
-        send_pushover_notification('Theme Uploaded', f"{context['title']} theme uploaded")
+        send_pushover_notification('Theme Uploaded', f"{context['title']} theme uploaded", trigger=TRIGGER_UI)
+        _trigger_metadata_refresh(provider, context.get('item'), item_id, local_path)
         item_dict, _ = sync_cached_item_theme_state(provider, item_id)
         return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
     except ValueError as exc:
@@ -1340,7 +1393,8 @@ def download_provider_from_youtube(provider, item_id):
             shutil.move(str(mp3_path), str(theme_path))
 
         logger.info('Downloaded YouTube theme for %s item', provider)
-        send_pushover_notification('Theme Downloaded', f"{context['title']} theme downloaded from YouTube")
+        send_pushover_notification('Theme Downloaded', f"{context['title']} theme downloaded from YouTube", trigger=TRIGGER_UI)
+        _trigger_metadata_refresh(provider, context.get('item'), item_id, local_path)
         item_dict, _ = sync_cached_item_theme_state(provider, item_id)
         return jsonify({'success': True, 'path': str(theme_path), 'item': item_dict})
     except yt_dlp.utils.DownloadError as exc:
