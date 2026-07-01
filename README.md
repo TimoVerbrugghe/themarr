@@ -164,11 +164,12 @@ DISABLE_AUTH=true
 | Copy local theme | ✅ | ✅ |
 | Delete local theme | ✅ | ✅ |
 
-## Plex Webhooks
+## Webhooks
 
+### Plex Webhooks
 Themarr can process Plex webhook events for newly added library items.
 
-### Setup
+#### Setup
 
 1. In Plex, go to **Settings > Webhooks**
 2. Click **Add Webhook**
@@ -178,12 +179,7 @@ Themarr can process Plex webhook events for newly added library items.
    ```
 4. Click **Save**
 
-### Optional webhook hardening
-
-- Themarr always validates webhook `Server.uuid` against the configured Plex server UUID (`machineIdentifier`) and rejects mismatches.
-- To harden ingestion, set `WEBHOOK_USERNAME` + `WEBHOOK_PASSWORD` and configure the webhook URL with credentials (e.g. `http://user:pass@host:8080/api/webhooks/plex`) so Plex sends Basic Auth.
-
-## Jellyfin Webhooks
+### Jellyfin Webhooks
 
 Themarr can process Jellyfin webhook events for newly added library items.
 
@@ -192,7 +188,7 @@ Unlike Plex webhooks, Jellyfin webhook automation only downloads from **ThemerrD
 - If local `theme.mp3` already exists, Themarr skips the item.
 - If ThemerrDB has no matching theme for the item, nothing is downloaded.
 
-### Setup (Jellyfin Webhook plugin)
+#### Setup
 
 1. In Jellyfin, install/enable the **Webhook** plugin.
 2. In the Webhook plugin UI, create a new generic webhook destination.
@@ -204,49 +200,9 @@ Unlike Plex webhooks, Jellyfin webhook automation only downloads from **ThemerrD
 5. Keep the request body format as JSON and leave the payload template at its default plugin values (no custom template required).
 6. Save and test the webhook.
 
-### Optional webhook hardening
+## Optional webhook hardening
 
 - Reuse `WEBHOOK_USERNAME` + `WEBHOOK_PASSWORD` to protect both Plex and Jellyfin webhook endpoints with Basic Auth.
-
-### API write protection (always enabled)
-
-All mutating API routes require either:
-
-- `X-Themarr-Api-Key: <api-key>` or
-- `Authorization: Bearer <api-key>` or
-- a valid browser session (established via the login screen)
-
-This applies regardless of `DISABLE_AUTH`. Even when UI auth is disabled, programmatic API callers (e.g. Sonarr/Radarr webhooks) must still send the API key.
-
-## Screenshots
-
-### Dark theme
-
-| Poster view | List view |
-|---|---|
-| ![Poster view dark](screenshots/01_poster_view_dark.png) | ![List view dark](screenshots/02_list_view_dark.png) |
-
-| YouTube downloader | Copy theme from |
-|---|---|
-| ![YouTube downloader dark](screenshots/03_youtube_downloader_dark.png) | ![Copy theme dark](screenshots/04_copy_theme_dark.png) |
-
-| Plex download |
-|---|
-| ![Plex download dark](screenshots/05_plex_download_dark.png) |
-
-### Light theme
-
-| Poster view | List view |
-|---|---|
-| ![Poster view light](screenshots/06_poster_view_light.png) | ![List view light](screenshots/07_list_view_light.png) |
-
-| YouTube downloader | Copy theme from |
-|---|---|
-| ![YouTube downloader light](screenshots/08_youtube_downloader_light.png) | ![Copy theme light](screenshots/09_copy_theme_light.png) |
-
-| Plex download |
-|---|
-| ![Plex download light](screenshots/10_plex_download_light.png) |
 
 ## License
 
