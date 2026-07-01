@@ -50,7 +50,7 @@ You can also upload custom MP3 files and copy existing local themes between item
 | Welcome screen | ![Welcome screen dark](screenshots/07_welcome_screen_dark.png) | ![Welcome screen light](screenshots/07_welcome_screen_light.png) |
 | Poster view | ![Poster view dark](screenshots/01_poster_view_dark.png) | ![Poster view light](screenshots/01_poster_view_light.png) |
 | List view | ![List view dark](screenshots/02_list_view_dark.png) | ![List view light](screenshots/02_list_view_light.png) |
-| YouTube downloader | ![YouTube downloader dark](screenshots/03_youtube_downloader_dark.png) | ![YouTube downloader light](screenshots/03_youtube_downloader_light.png) |
+| YouTube downloader (trim start/stop) | ![YouTube downloader trim dark](screenshots/03_youtube_downloader_dark.png) | ![YouTube downloader trim light](screenshots/03_youtube_downloader_light.png) |
 | Copy theme | ![Copy theme dark](screenshots/04_copy_theme_dark.png) | ![Copy theme light](screenshots/04_copy_theme_light.png) |
 | Plex download | ![Plex download dark](screenshots/05_plex_download_dark.png) | ![Plex download light](screenshots/05_plex_download_light.png) |
 
