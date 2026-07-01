@@ -1199,7 +1199,7 @@ def preview_provider_themerrdb_theme(provider, item_id):
     try:
         provider = _normalize_provider(provider)
         context = _get_item_context(provider, item_id)
-        themerrdb_data = _get_themerrdb_data_for_context(context)
+        themerrdb_data = get_themerrdb_data_for_context(context)
         if not themerrdb_data or not themerrdb_data.get('youtube_theme_url'):
             return jsonify({'error': 'No theme available in ThemerrDB'}), 404
 
@@ -1247,7 +1247,7 @@ def download_provider_from_themerrdb(provider, item_id):
         if theme_path.exists() and theme_path.stat().st_size > 0 and not overwrite:
             return jsonify({'error': 'Theme already exists', 'exists': True}), 409
 
-        themerrdb_data = _get_themerrdb_data_for_context(context)
+        themerrdb_data = get_themerrdb_data_for_context(context)
         if not themerrdb_data or not themerrdb_data.get('youtube_theme_url'):
             return jsonify({'error': 'No theme available in ThemerrDB'}), 404
 

@@ -160,6 +160,45 @@ class TestThemerrDB:
         assert payload['available'] is True
         assert payload['youtube_url'] == 'https://youtube.com/watch?v=test'
 
+    def test_preview_provider_themerrdb_success_for_jellyfin(self, client):
+        context = {
+            'provider': 'jellyfin',
+            'item_id': 'jf-1',
+            'title': 'Jellyfin Movie',
+            'item': {'Id': 'jf-1', 'Type': 'Movie', 'ProviderIds': {'Imdb': 'tt1234567'}},
+            'local_path': '/movies/Jellyfin Movie (2020)',
+        }
+        with patch('app.web_app._get_item_context', return_value=context), \
+             patch('app.web_app.get_themerrdb_data_for_context', return_value={'youtube_theme_url': 'https://youtube.com/watch?v=test'}) as mock_get_data, \
+             patch('app.web_app.extract_youtube_audio_url', return_value='https://rr1---sn-test.googlevideo.com/stream'), \
+             patch('app.web_app.http_requests') as mock_requests:
+            mock_resp = MagicMock()
+            mock_resp.iter_content.return_value = [b'audio_chunk']
+            mock_requests.get.return_value = mock_resp
+
+            resp = client.get('/api/items/jellyfin/jf-1/theme/themerrdb/preview')
+
+        assert resp.status_code == 200
+        mock_get_data.assert_called_once_with(context)
+
+    def test_download_provider_themerrdb_not_found_for_jellyfin(self, client, tmp_path):
+        movie_dir = tmp_path / 'Jellyfin Movie (2020)'
+        movie_dir.mkdir()
+        context = {
+            'provider': 'jellyfin',
+            'item_id': 'jf-1',
+            'title': 'Jellyfin Movie',
+            'item': {'Id': 'jf-1', 'Type': 'Movie', 'ProviderIds': {'Imdb': 'tt1234567'}},
+            'local_path': str(movie_dir),
+        }
+        with patch('app.web_app._get_item_context', return_value=context), \
+             patch('app.web_app.get_themerrdb_data_for_context', return_value=None) as mock_get_data:
+            resp = client.post('/api/items/jellyfin/jf-1/theme/themerrdb', json={'overwrite': False})
+
+        assert resp.status_code == 404
+        assert 'error' in resp.get_json()
+        mock_get_data.assert_called_once_with(context)
+
 
 class TestThemerrDbCacheKey:
     """BUG-002 — ThemerrDB cache key must include item_type to prevent cross-type collisions."""
