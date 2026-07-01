@@ -1039,6 +1039,10 @@ def preview_themerrdb_theme(rating_key):
         response = http_requests.get(audio_url, stream=True, timeout=30, allow_redirects=False)
         if response.status_code != 200:
             response.close()
+            logger.warning(
+                'Audio stream for item %s returned HTTP %s — possible redirect/SSRF attempt',
+                rating_key, response.status_code,
+            )
             return jsonify({'error': 'Audio stream not available'}), 502
         return Response(
             _stream_http_response_chunks(response),
@@ -1232,6 +1236,10 @@ def preview_provider_themerrdb_theme(provider, item_id):
         response = http_requests.get(audio_url, stream=True, timeout=30, allow_redirects=False)
         if response.status_code != 200:
             response.close()
+            logger.warning(
+                'Audio stream for %s item %s returned HTTP %s — possible redirect/SSRF attempt',
+                provider, item_id, response.status_code,
+            )
             return jsonify({'error': 'Audio stream not available'}), 502
         return Response(
             _stream_http_response_chunks(response),
