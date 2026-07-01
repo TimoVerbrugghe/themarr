@@ -17,6 +17,7 @@ _login_attempt_lock = threading.Lock()
 _login_attempts: dict[str, list[float]] = {}  # {remote_addr: [timestamp, ...]}
 _LOGIN_RATE_LIMIT_WINDOW = 300  # 5-minute sliding window
 _LOGIN_RATE_LIMIT_MAX = 20      # max login attempts within the window
+_MAX_TRACKED_IPS = 10_000       # evict expired entries when the dict reaches this size
 
 
 def _is_login_rate_limited(remote_addr: str) -> bool:
@@ -24,7 +25,9 @@ def _is_login_rate_limited(remote_addr: str) -> bool:
 
     Uses a sliding-window in-memory counter keyed on the client IP address.
     Old timestamps outside the window are discarded on each call so memory
-    usage stays bounded.
+    usage stays bounded.  When the total number of tracked IPs reaches
+    _MAX_TRACKED_IPS, all fully-expired entries are evicted to prevent
+    unbounded growth under a distributed source-IP attack.
 
     Automatically disabled when Flask TESTING mode is active so the unit
     test suite is not affected.
@@ -37,6 +40,13 @@ def _is_login_rate_limited(remote_addr: str) -> bool:
     now = time.time()
     window_start = now - _LOGIN_RATE_LIMIT_WINDOW
     with _login_attempt_lock:
+        # Evict fully-expired entries when the dict is large to bound memory.
+        if len(_login_attempts) >= _MAX_TRACKED_IPS:
+            expired = [ip for ip, ts in _login_attempts.items()
+                       if not any(t > window_start for t in ts)]
+            for ip in expired:
+                del _login_attempts[ip]
+
         prior = [t for t in _login_attempts.get(remote_addr, []) if t > window_start]
         if len(prior) >= _LOGIN_RATE_LIMIT_MAX:
             # Do NOT record this attempt — the window must be allowed to expire
