@@ -7,14 +7,13 @@ from urllib.parse import urlparse
 import requests
 import yt_dlp
 
-from app.media_utils import MAX_UPLOAD_BYTES
-
 logger = logging.getLogger(__name__)
 
 ALLOWED_YOUTUBE_HOSTS = {
     'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be',
 }
 MAX_YOUTUBE_DURATION_SECONDS = 15 * 60
+MAX_YOUTUBE_DOWNLOAD_BYTES = 1024 * 1024 * 1024
 
 
 def is_valid_youtube_url(url):
@@ -114,7 +113,9 @@ def _youtube_download_ydl_opts(tmpdir, profile_overrides=None, start_seconds=Non
             start_seconds=start_seconds,
             end_seconds=end_seconds,
         ),
-        'max_filesize': MAX_UPLOAD_BYTES,
+        # yt-dlp applies max_filesize to the pre-trim source download, so this
+        # limit must allow large inputs that ffmpeg can later trim to a small MP3.
+        'max_filesize': MAX_YOUTUBE_DOWNLOAD_BYTES,
     }
     if profile_overrides:
         opts.update(profile_overrides)

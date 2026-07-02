@@ -5,7 +5,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tests.helpers import make_mock_show
-from app.youtube_utils import build_youtube_match_filter, normalize_youtube_trim_window
+from app.youtube_utils import (
+    MAX_YOUTUBE_DOWNLOAD_BYTES,
+    build_youtube_match_filter,
+    normalize_youtube_trim_window,
+)
 
 
 class TestThemeYoutube:
@@ -341,3 +345,12 @@ class TestYoutubeSearchOpts:
             with web_app.app.test_client() as c:
                 resp = c.get(f'/api/youtube/search?q={"a" * 201}')
         assert resp.status_code == 400
+
+
+class TestYoutubeDownloadOpts:
+    def test_youtube_download_opts_use_large_pre_trim_filesize_limit(self, tmp_path):
+        from app.youtube_utils import _youtube_download_ydl_opts
+
+        opts = _youtube_download_ydl_opts(str(tmp_path), start_seconds=0, end_seconds=25)
+
+        assert opts['max_filesize'] == MAX_YOUTUBE_DOWNLOAD_BYTES
